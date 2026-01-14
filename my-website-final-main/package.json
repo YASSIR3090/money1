@@ -1,0 +1,9 @@
+{
+  "name": "money1-root",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "install": "cd Frontend && npm install",
+    "build": "cd Frontend && npm run build"
+  }
+}
