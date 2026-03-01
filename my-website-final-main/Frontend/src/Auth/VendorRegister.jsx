@@ -1,49 +1,47 @@
-import React, { useState, useEffect } from "react";
+// src/Auth/VendorRegister.jsx - FIXED VERSION 🔥
+// ✅ NO MULTIPLE SUBMISSIONS
+// ✅ PREVENTS INFINITE LOOPS
+// ✅ RED ANIMATION FOR INCOMPLETE FIELDS
+// ✅ AUTO-SCROLL TO FIRST MISSING FIELD
+// ✅ CLEAR VISUAL INDICATORS
+// ✅ SMOOTH USER EXPERIENCE
+
+import React, { useState, useEffect, useRef } from "react";
 import "bootstrap/dist/css/bootstrap.min.css";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import apiClient, { getToken, isAuthenticated, debugTokenStorage, clearTokens } from "../api/apiClient";
+import { compressImage } from "../services/imageCompressor";
 
 function VendorRegister() {
   const [formData, setFormData] = useState({
-    // A. Taarifa za Duka
     shopName: "",
-    sellerName: "",
-    phoneNumber: "",
-    email: "",
     businessType: "",
-    
-    // B. Mahali Duka Lilipo
+    country: "Tanzania",
     region: "",
     district: "",
     area: "",
     street: "",
     mapLocation: "",
     openingHours: "",
-    
-    // C. Taarifa za Bidhaa
+    whatsappNumber: "",
     mainCategory: "",
     subCategory: "",
     productName: "",
     brand: "",
+    description: "",
     specifications: "",
-    
-    // D. Upatikanaji wa Bidhaa
     stockStatus: "Available",
     quantityAvailable: "",
     lastUpdated: new Date().toISOString().split('T')[0],
-    
-    // E. Bei & Ziada
     price: "",
     priceType: "Fixed",
     warranty: "No",
     warrantyPeriod: "",
-    
-    // F. Additional Fields based on category
     condition: "New",
     size: "",
     color: "",
     material: "",
-    
-    // G. Thibitisho
     confirmAvailability: false,
     agreeToUpdate: false
   });
@@ -61,23 +59,321 @@ function VendorRegister() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false); // 🔥 CRITICAL: Prevent multiple submissions
   const [currentStep, setCurrentStep] = useState(1);
-  const [progress, setProgress] = useState(25);
-  const [isHovering, setIsHovering] = useState({
-    submit: false,
-    back: false,
-    next: false
-  });
-
-  // New states for credential flow
-  const [showCredentialsStep, setShowCredentialsStep] = useState(false);
-  const [generatedPassword, setGeneratedPassword] = useState("");
-  const [tempPassword, setTempPassword] = useState("");
-  const [createdSellerId, setCreatedSellerId] = useState(null);
+  const [progress, setProgress] = useState(33);
+  const [imgError, setImgError] = useState(false);
+  const [wordCount, setWordCount] = useState(0);
+  const [incompleteFields, setIncompleteFields] = useState([]);
+  const [animateField, setAnimateField] = useState(null);
+  
+  const hasCheckedAuth = useRef(false);
+  const fieldRefs = useRef({});
   
   const navigate = useNavigate();
+  const location = useLocation();
+  const { 
+    user: authUser, 
+    isVendorRegistered, 
+    registerVendor: registerVendorToContext,
+    getUserProfilePicture,
+    logout
+  } = useAuth();
 
-  // Tanzanian regions and districts data
+  // ✅ Save to multiple storages function
+  const saveToAllStorages = (key, value) => {
+    try {
+      localStorage.setItem(key, value);
+      sessionStorage.setItem(`${key}_backup`, value);
+      const domain = window.location.hostname.replace(/\./g, '_');
+      sessionStorage.setItem(`${domain}_${key}`, value);
+      sessionStorage.setItem(`broadcast_${key}`, JSON.stringify({
+        data: value,
+        timestamp: Date.now(),
+        domain: window.location.hostname
+      }));
+      console.log(`✅ Saved ${key} to all storages`);
+    } catch (error) {
+      console.warn(`❌ Error saving ${key}:`, error);
+    }
+  };
+
+  // ✅ Load from multiple storages function
+  const loadFromAllStorages = (key) => {
+    const storages = [
+      () => localStorage.getItem(key),
+      () => sessionStorage.getItem(`${key}_backup`),
+      () => {
+        const domain = window.location.hostname.replace(/\./g, '_');
+        return sessionStorage.getItem(`${domain}_${key}`);
+      }
+    ];
+    
+    for (const getter of storages) {
+      try {
+        const value = getter();
+        if (value) {
+          console.log(`✅ Found ${key} in storage`);
+          return value;
+        }
+      } catch (e) {}
+    }
+    return null;
+  };
+
+  // ✅ Dispatch event for real-time updates
+  const dispatchProductsUpdatedEvent = (action, productData) => {
+    try {
+      const event = new CustomEvent('productsUpdated', { 
+        detail: { 
+          action: action,
+          timestamp: Date.now(),
+          product: productData,
+          domain: window.location.hostname
+        } 
+      });
+      window.dispatchEvent(event);
+      console.log(`📢 Dispatched productsUpdated event: ${action}`);
+      
+      try {
+        const channel = new BroadcastChannel('availo_sync');
+        channel.postMessage({ 
+          type: 'PRODUCTS_UPDATE', 
+          action: action,
+          product: productData,
+          timestamp: Date.now()
+        });
+        console.log("📢 Broadcast sent via BroadcastChannel");
+      } catch (e) {
+        console.warn("BroadcastChannel not supported:", e);
+      }
+      
+      const allSellers = JSON.parse(localStorage.getItem('allSellersData') || '[]');
+      localStorage.setItem('allSellersData', JSON.stringify(allSellers));
+      
+      sessionStorage.setItem('broadcast_products', JSON.stringify({
+        action: action,
+        product: productData,
+        timestamp: Date.now(),
+        domain: window.location.hostname
+      }));
+      
+      setTimeout(() => {
+        window.dispatchEvent(event);
+        localStorage.setItem('allSellersData', JSON.stringify(allSellers));
+      }, 100);
+      
+    } catch (error) {
+      console.error('❌ Error dispatching event:', error);
+    }
+  };
+
+  // ✅ DEBUG: Check on mount
+  useEffect(() => {
+    console.log("🔍 ========== VENDOR REGISTER MOUNTED ==========");
+    console.log("🔍 Current URL:", window.location.href);
+    console.log("🔍 ============================================");
+  }, []);
+
+  // ✅ SIMPLIFIED FOR PUBLIC ACCESS
+  useEffect(() => {
+    if (hasCheckedAuth.current) return;
+    hasCheckedAuth.current = true;
+
+    console.log("🔐 Vendor Register loaded");
+    
+    if (!authUser) {
+      console.log("⏳ Waiting for authUser to load...");
+      const storedUser = localStorage.getItem('availoUser');
+      if (storedUser) {
+        try {
+          const parsedUser = JSON.parse(storedUser);
+          console.log("✅ Loaded user directly from localStorage:", parsedUser.email);
+        } catch (e) {
+          console.error("❌ Error parsing stored user:", e);
+        }
+      }
+      return;
+    }
+    
+    const action = location.state?.action;
+    const isAddProductAction = action === "add-product";
+    const isEditProductAction = action === "edit-product";
+    
+    console.log("🔍 Action from state:", action);
+    
+    if (!authUser || !authUser.email) {
+      console.log("⏳ Auth user not fully loaded yet");
+      return;
+    }
+    
+    const isRegistered = isVendorRegistered(authUser.email);
+    
+    if (isRegistered && !isAddProductAction && !isEditProductAction) {
+      console.log("✅ User already registered - redirecting to profile");
+      hasCheckedAuth.current = true;
+      navigate('/seller-profile', { 
+        state: { message: "You are already registered as a vendor" } 
+      });
+      return;
+    }
+    
+    if (isRegistered && isEditProductAction && location.state?.product) {
+      console.log("✅ Editing product - populating form");
+      const product = location.state.product;
+      
+      setFormData(prev => ({
+        ...prev,
+        shopName: product.shopName || "",
+        businessType: "",
+        country: "Tanzania",
+        region: product.region || "",
+        district: product.district || "",
+        area: product.area || "",
+        street: product.street || "",
+        mapLocation: product.mapLocation || "",
+        openingHours: product.openingHours || "",
+        whatsappNumber: product.whatsappNumber || "",
+        mainCategory: product.mainCategory || "",
+        subCategory: product.subCategory || "",
+        productName: product.productName || "",
+        brand: product.brand || "",
+        description: product.description || "",
+        specifications: product.specifications || "",
+        stockStatus: product.stockStatus || "Available",
+        quantityAvailable: product.quantityAvailable || "",
+        price: product.price || "",
+        priceType: product.priceType || "Fixed",
+        warranty: product.warranty || "No",
+        warrantyPeriod: product.warrantyPeriod || "",
+        condition: product.condition || "New",
+        size: product.size || "",
+        color: product.color || "",
+        material: product.material || ""
+      }));
+      
+      if (product.productImages?.length > 0) {
+        setFilePreviews(prev => ({
+          ...prev,
+          productImages: product.productImages.slice(0, 7)
+        }));
+      }
+      
+      if (product.shopImage) {
+        setFilePreviews(prev => ({
+          ...prev,
+          shopImage: product.shopImage
+        }));
+      }
+    }
+    
+    hasCheckedAuth.current = true;
+    
+  }, [authUser]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }, []);
+
+  useEffect(() => {
+    setFormData(prev => ({
+      ...prev,
+      lastUpdated: new Date().toISOString().split('T')[0]
+    }));
+  }, [formData.stockStatus, formData.quantityAvailable]);
+
+  useEffect(() => {
+    if (formData.mainCategory && !subCategories[formData.mainCategory]) {
+      setFormData(prev => ({
+        ...prev,
+        subCategory: "",
+        specifications: ""
+      }));
+    }
+  }, [formData.mainCategory]);
+
+  useEffect(() => {
+    if (formData.description) {
+      const words = formData.description.trim().split(/\s+/).filter(word => word.length > 0);
+      setWordCount(words.length);
+    } else {
+      setWordCount(0);
+    }
+  }, [formData.description]);
+
+  // ✅ Clear animation after 2 seconds
+  useEffect(() => {
+    if (animateField) {
+      const timer = setTimeout(() => {
+        setAnimateField(null);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [animateField]);
+
+  const ProfileImage = ({ size = 60, showBorder = false }) => {
+    const profileUrl = getUserProfilePicture();
+    const [localImgError, setLocalImgError] = useState(false);
+    
+    const getUserInitial = () => {
+      if (!authUser) return "U";
+      const name = authUser.name || authUser.displayName || authUser.email?.split('@')[0] || "User";
+      return name.charAt(0).toUpperCase();
+    };
+
+    if (authUser && profileUrl && !localImgError) {
+      return (
+        <img 
+          src={profileUrl} 
+          alt={authUser?.name || "Profile"} 
+          className="rounded-circle"
+          style={{ 
+            width: `${size}px`, 
+            height: `${size}px`, 
+            objectFit: "cover",
+            border: showBorder ? "3px solid #000000" : "none",
+            borderRadius: "12px !important"
+          }}
+          onError={() => setLocalImgError(true)}
+          referrerPolicy="no-referrer"
+          crossOrigin="anonymous"
+        />
+      );
+    }
+
+    return (
+      <div style={{ 
+        width: `${size}px`, 
+        height: `${size}px`, 
+        borderRadius: "12px",
+        backgroundColor: "#dc3545",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "#FFFFFF",
+        fontWeight: "bold",
+        fontSize: `${size * 0.4}px`,
+        border: showBorder ? "3px solid #000000" : "none"
+      }}>
+        {getUserInitial()}
+      </div>
+    );
+  };
+
+  const africanCountries = [
+    "Tanzania", "Kenya", "Uganda", "Rwanda", "Burundi", "DR Congo",
+    "Ethiopia", "Somalia", "South Sudan", "Sudan", "Egypt", "Libya",
+    "Tunisia", "Algeria", "Morocco", "Mauritania", "Mali", "Niger",
+    "Chad", "Nigeria", "Ghana", "Ivory Coast", "Senegal", "Guinea",
+    "Burkina Faso", "Benin", "Togo", "Sierra Leone", "Liberia",
+    "Cameroon", "Central African Republic", "Gabon", "Congo",
+    "Equatorial Guinea", "Sao Tome and Principe", "Angola", "Zambia",
+    "Malawi", "Mozambique", "Zimbabwe", "Botswana", "Namibia",
+    "South Africa", "Lesotho", "Eswatini", "Madagascar", "Mauritius",
+    "Seychelles", "Comoros", "Djibouti", "Eritrea", "Gambia",
+    "Guinea-Bissau", "Cape Verde"
+  ];
+
   const tanzaniaRegions = [
     "Dar es Salaam", "Arusha", "Kilimanjaro", "Tanga", "Morogoro", 
     "Pwani", "Dodoma", "Singida", "Tabora", "Rukwa", 
@@ -86,13 +382,6 @@ function VendorRegister() {
     "Mtwara", "Zanzibar Urban/West", "Zanzibar North", "Zanzibar South"
   ];
 
-  const businessTypes = [
-    "Retail Shop", "Wholesaler", "Online Store", "Authorized Dealer",
-    "General Store", "Specialty Store", "Showroom", "Boutique",
-    "Supermarket", "Hardware Store", "Electronics Shop"
-  ];
-
-  // Main Categories
   const mainCategories = [
     "Electronics & Computers",
     "Fashion & Clothing",
@@ -103,7 +392,6 @@ function VendorRegister() {
     "Other"
   ];
 
-  // Sub-categories for each main category
   const subCategories = {
     "Electronics & Computers": {
       "Laptops": ["Gaming Laptops", "Business Laptops", "Student Laptops", "Convertible Laptops"],
@@ -152,20 +440,13 @@ function VendorRegister() {
     }
   };
 
-  // Condition options
   const conditionOptions = ["New", "Used - Like New", "Used - Good", "Used - Fair", "Refurbished"];
-
-  // Common brands across categories
   const commonBrands = [
     "Generic", "Local Brand", "Other",
-    // Electronics
     "Apple", "Samsung", "Dell", "HP", "Lenovo", "Asus", "Acer", "Microsoft", "Toshiba", "Sony",
     "LG", "Intel", "AMD", "NVIDIA", "Corsair", "Kingston", "Western Digital", "Seagate", "TP-Link",
-    // Fashion
     "Nike", "Adidas", "Puma", "Gucci", "Louis Vuitton", "Zara", "H&M", "Levi's",
-    // Beauty
     "L'Oréal", "Maybelline", "MAC", "Nivea", "Vaseline", "Dove", "Garnier",
-    // Vehicles
     "Toyota", "Honda", "Ford", "BMW", "Mercedes", "Yamaha", "Suzuki"
   ];
 
@@ -173,95 +454,169 @@ function VendorRegister() {
   const priceTypeOptions = ["Fixed", "Negotiable"];
   const warrantyOptions = ["Yes", "No"];
 
-  // Auto-update lastUpdated when stock status changes
-  useEffect(() => {
-    setFormData(prev => ({
-      ...prev,
-      lastUpdated: new Date().toISOString().split('T')[0]
-    }));
-  }, [formData.stockStatus, formData.quantityAvailable]);
-
-  // Reset subCategory when mainCategory changes
-  useEffect(() => {
-    if (formData.mainCategory && !subCategories[formData.mainCategory]) {
-      setFormData(prev => ({
-        ...prev,
-        subCategory: "",
-        specifications: ""
-      }));
-    }
-  }, [formData.mainCategory]);
+  const getCurrencySymbol = () => {
+    return "TZS";
+  };
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setFormData({
-      ...formData,
-      [name]: type === 'checkbox' ? checked : value
-    });
+    
+    if (name === "description") {
+      const words = value.trim().split(/\s+/).filter(word => word.length > 0);
+      if (words.length <= 200) {
+        setFormData({ ...formData, [name]: value });
+      } else {
+        const limitedWords = words.slice(0, 200).join(' ');
+        setFormData({ ...formData, [name]: limitedWords });
+      }
+      return;
+    }
+    
+    if (name === "country" && value !== "Tanzania") {
+      setFormData(prev => ({ ...prev, [name]: value, region: "" }));
+    } else {
+      setFormData({ ...formData, [name]: type === 'checkbox' ? checked : value });
+    }
+    
+    // Remove from incomplete fields when user fills it
+    if (incompleteFields.includes(name)) {
+      setIncompleteFields(prev => prev.filter(field => field !== name));
+    }
   };
 
-  const handleFileChange = (e, fileType) => {
+  const handleFileChange = async (e, fileType) => {
     const selectedFiles = e.target.files;
-    
+
     if (fileType === 'productImages') {
-      // Allow up to 6 images
-      const newFiles = Array.from(selectedFiles).slice(0, 6);
-      
-      // Create previews
+      const newFiles = Array.from(selectedFiles).slice(0, 7);
       const newPreviews = [];
-      newFiles.forEach(file => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          newPreviews.push(e.target.result);
-          if (newPreviews.length === newFiles.length) {
-            setFilePreviews(prev => ({
-              ...prev,
-              productImages: newPreviews
-            }));
-          }
-        };
-        reader.readAsDataURL(file);
-      });
-      
-      setFiles(prev => ({
-        ...prev,
-        productImages: newFiles
-      }));
-      
+
+      // Show loading indicator
+      setIsLoading(true);
+      console.log(`📸 Processing ${newFiles.length} images...`);
+
+      for (const file of newFiles) {
+        const preview = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            // 🔥 COMPRESS EACH IMAGE AUTOMATICALLY!
+            const original = e.target.result;
+            const originalSize = Math.round((original.length * 3) / 4 / 1024);
+            console.log(`📸 Original image size: ${originalSize}KB`);
+
+            // Compress the image
+            const compressed = await compressImage(original, 600, 0.7);
+            const compressedSize = Math.round((compressed.length * 3) / 4 / 1024);
+            console.log(`📸 Compressed: ${originalSize}KB → ${compressedSize}KB`);
+
+            resolve(compressed);
+          };
+          reader.readAsDataURL(file);
+        });
+        newPreviews.push(preview);
+      }
+
+      setFilePreviews(prev => ({ ...prev, productImages: newPreviews }));
+      setFiles(prev => ({ ...prev, productImages: newFiles }));
+      setIsLoading(false);
+
+      // Remove from incomplete fields
+      if (incompleteFields.includes('productImages')) {
+        setIncompleteFields(prev => prev.filter(field => field !== 'productImages'));
+      }
+
     } else if (fileType === 'shopImage') {
       const file = selectedFiles[0];
       if (file) {
+        setIsLoading(true);
         const reader = new FileReader();
-        reader.onload = (e) => {
-          setFilePreviews(prev => ({
-            ...prev,
-            shopImage: e.target.result
-          }));
+        reader.onload = async (e) => {
+          const original = e.target.result;
+          const originalSize = Math.round((original.length * 3) / 4 / 1024);
+          console.log(`📸 Original shop image size: ${originalSize}KB`);
+
+          const compressed = await compressImage(original, 400, 0.6);
+          const compressedSize = Math.round((compressed.length * 3) / 4 / 1024);
+          console.log(`📸 Compressed shop image: ${originalSize}KB → ${compressedSize}KB`);
+
+          setFilePreviews(prev => ({ ...prev, shopImage: compressed }));
+          setIsLoading(false);
         };
         reader.readAsDataURL(file);
-        
-        setFiles(prev => ({
-          ...prev,
-          shopImage: file
-        }));
       }
     }
   };
 
   const nextStep = () => {
-    if (currentStep < 4) {
+    // 🔥 Prevent multiple clicks
+    if (isLoading) return;
+    
+    const stepValid = validateStep(currentStep);
+    const missingFields = getMissingFields(currentStep);
+    
+    if (!stepValid) {
+      setIncompleteFields(missingFields);
+      if (missingFields.length > 0) {
+        const firstField = missingFields[0];
+        setAnimateField(firstField);
+        if (fieldRefs.current[firstField]) {
+          fieldRefs.current[firstField].scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' 
+          });
+        }
+      }
+      return;
+    }
+    
+    if (currentStep < 3) {
+      setIsLoading(true);
       setCurrentStep(currentStep + 1);
-      setProgress(((currentStep + 1) / 4) * 100);
+      setProgress(((currentStep + 1) / 3) * 100);
       window.scrollTo({ top: 0, behavior: 'smooth' });
+      
+      // Reset loading after animation
+      setTimeout(() => setIsLoading(false), 300);
     }
   };
 
   const prevStep = () => {
     if (currentStep > 1) {
       setCurrentStep(currentStep - 1);
-      setProgress(((currentStep - 1) / 4) * 100);
+      setProgress(((currentStep - 1) / 3) * 100);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
+  };
+
+  // ✅ Get missing fields for current step
+  const getMissingFields = (step) => {
+    const missing = [];
+    
+    switch (step) {
+      case 1:
+        if (!formData.shopName.trim()) missing.push('shopName');
+        if (!formData.country.trim()) missing.push('country');
+        if (!formData.whatsappNumber.trim()) missing.push('whatsappNumber');
+        if (formData.country === "Tanzania" && !formData.region.trim()) missing.push('region');
+        if (!formData.district.trim()) missing.push('district');
+        if (!formData.area.trim()) missing.push('area');
+        break;
+      case 2:
+        if (!formData.mainCategory.trim()) missing.push('mainCategory');
+        if (!formData.productName.trim()) missing.push('productName');
+        if (!formData.description.trim()) missing.push('description');
+        if (!formData.price.trim()) missing.push('price');
+        if (files.productImages.length === 0) missing.push('productImages');
+        break;
+      case 3:
+        if (!formData.confirmAvailability) missing.push('confirmAvailability');
+        if (!formData.agreeToUpdate) missing.push('agreeToUpdate');
+        break;
+      default:
+        break;
+    }
+    
+    return missing;
   };
 
   const validateStep = (step) => {
@@ -269,24 +624,21 @@ function VendorRegister() {
       case 1:
         return (
           formData.shopName.trim() !== "" &&
-          formData.sellerName.trim() !== "" &&
-          formData.phoneNumber.trim() !== "" &&
-          formData.businessType.trim() !== ""
-        );
-      case 2:
-        return (
-          formData.region.trim() !== "" &&
+          formData.country.trim() !== "" &&
+          formData.whatsappNumber.trim() !== "" &&
+          (formData.country === "Tanzania" ? formData.region.trim() !== "" : true) &&
           formData.district.trim() !== "" &&
           formData.area.trim() !== ""
         );
-      case 3:
+      case 2:
         return (
           formData.mainCategory.trim() !== "" &&
           formData.productName.trim() !== "" &&
+          formData.description.trim() !== "" &&
           formData.price.trim() !== "" &&
           files.productImages.length > 0
         );
-      case 4:
+      case 3:
         return (
           formData.confirmAvailability &&
           formData.agreeToUpdate
@@ -296,384 +648,215 @@ function VendorRegister() {
     }
   };
 
-  // Check if category requires specifications
   const requiresSpecifications = () => {
     const specCategories = ["Electronics & Computers", "Home Appliances", "Vehicles & Auto Parts"];
     return specCategories.includes(formData.mainCategory);
   };
 
-  // Check if category requires size/color/material
   const requiresFashionDetails = () => {
     return formData.mainCategory === "Fashion & Clothing";
   };
 
+  // ============== HANDLE SUBMIT WITH APICLIENT - FIXED 🔥 ==============
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // 🔥 CRITICAL: Prevent multiple submissions
+    if (isSubmitting) {
+      console.log("⏳ Already submitting, please wait...");
+      return;
+    }
+    
     setError("");
-    setIsLoading(true);
-
-    // Validate required fields
-    if (!validateStep(4)) {
-      setError("Please agree to all terms and confirm product availability");
-      setIsLoading(false);
+    setSuccess("");
+    
+    // Validate step 3 before submitting
+    const stepValid = validateStep(3);
+    const missingFields = getMissingFields(3);
+    
+    if (!stepValid) {
+      setIncompleteFields(missingFields);
+      if (missingFields.length > 0) {
+        const firstField = missingFields[0];
+        setAnimateField(firstField);
+        if (fieldRefs.current[firstField]) {
+          fieldRefs.current[firstField].scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' 
+          });
+        }
+      }
       return;
     }
 
-    // Validate files
     if (files.productImages.length === 0) {
       setError("Please upload at least one product image");
-      setIsLoading(false);
+      setIncompleteFields(['productImages']);
+      setAnimateField('productImages');
+      if (fieldRefs.current['productImages']) {
+        fieldRefs.current['productImages'].scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'center' 
+        });
+      }
       return;
     }
 
-    try {
-      // Simulate API call delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
+    if (!authUser) {
+      setError("Authentication required. Please login first.");
+      return;
+    }
 
-      // Generate seller data
-      const sellerId = Date.now();
-      const shopImageUrl = filePreviews.shopImage || "https://images.unsplash.com/photo-1563013544-824ae1b704d3?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80";
+    // 🔥 SET SUBMITTING TRUE - PREVENTS MULTIPLE CLICKS
+    setIsSubmitting(true);
+
+    try {
+      const isEditOperation = location.state?.action === "edit-product" && location.state?.product;
+      const existingProduct = isEditOperation ? location.state.product : null;
       
-      const sellerDataToStore = {
-        id: sellerId,
-        // Shop Information
-        shopName: formData.shopName,
-        sellerName: formData.sellerName,
-        phoneNumber: formData.phoneNumber,
-        email: formData.email,
-        businessType: formData.businessType,
-        
-        // Location
+      const productImagesData = filePreviews.productImages.length > 0 
+        ? filePreviews.productImages.slice(0, 7)
+        : existingProduct?.productImages || ["https://images.unsplash.com/photo-1556656793-08538906a9f8?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"];
+      
+      const shopImageData = filePreviews.shopImage 
+        ? filePreviews.shopImage 
+        : existingProduct?.shopImage || "https://images.unsplash.com/photo-1563013544-824ae1b704d3?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80";
+      
+      const userPicture = getUserProfilePicture();
+
+      console.log("📤 Preparing product data for backend...");
+      
+      const productData = {
+        product_name: formData.productName,
+        shop_name: formData.shopName,
+        seller_name: authUser.name || authUser.displayName || authUser.email?.split('@')[0] || "Seller",
+        seller: authUser.id || authUser.uid,
+        main_category: formData.mainCategory,
+        product_category: formData.subCategory,
+        sub_category: formData.subCategory,
+        brand: formData.brand,
+        description: formData.description,
+        specifications: formData.specifications,
+        product_images: productImagesData,
+        shop_image: shopImageData,
+        price: parseFloat(formData.price) || 0,
+        currency: "TZS",
+        price_type: formData.priceType,
+        stock_status: formData.stockStatus,
+        quantity_available: parseInt(formData.quantityAvailable) || 0,
+        condition: formData.condition,
+        warranty: formData.warranty,
+        warranty_period: formData.warrantyPeriod,
+        size: formData.size,
+        color: formData.color,
+        material: formData.material,
+        country: "Tanzania",
         region: formData.region,
         district: formData.district,
         area: formData.area,
         street: formData.street,
-        mapLocation: formData.mapLocation,
-        openingHours: formData.openingHours,
-        
-        // Product Information
-        mainCategory: formData.mainCategory,
-        subCategory: formData.subCategory,
-        productName: formData.productName,
-        brand: formData.brand,
-        specifications: formData.specifications,
-        condition: formData.condition,
-        size: formData.size,
-        color: formData.color,
-        material: formData.material,
-        
-        // Availability
-        stockStatus: formData.stockStatus,
-        quantityAvailable: formData.quantityAvailable,
-        lastUpdated: formData.lastUpdated,
-        
-        // Pricing
-        price: formData.price,
-        priceType: formData.priceType,
-        warranty: formData.warranty,
-        warrantyPeriod: formData.warrantyPeriod,
-        
-        // Images
-        productImages: filePreviews.productImages,
-        shopImage: shopImageUrl,
-        
-        // Verification
-        isVerified: false,
-        registrationDate: new Date().toISOString(),
-        status: "active"
+        map_location: formData.mapLocation,
+        opening_hours: formData.openingHours,
+        phone_number: formData.whatsappNumber,
+        whatsapp_number: formData.whatsappNumber,
+        email: authUser.email,
+        features: [],
+        is_active: true,
+        is_verified: false,
+        business_type: "Retail Shop",
+        profile_picture: userPicture
       };
 
-      // Store seller registration data (not logged in yet). We'll require them to set/save a password and log in.
-      localStorage.setItem("pendingSeller", JSON.stringify(sellerDataToStore));
-      localStorage.setItem("currentSeller", JSON.stringify(sellerDataToStore));
-      localStorage.setItem("sellerEmail", formData.email || formData.phoneNumber);
+      console.log("📤 Sending product data to backend with apiClient...");
 
-      // Get existing sellers or initialize empty array
-      const existingSellers = JSON.parse(localStorage.getItem('allSellersData') || '[]');
+      let response;
+      if (isEditOperation && existingProduct?.id) {
+        response = await apiClient.put(`/api/products/${existingProduct.id}/`, productData);
+        console.log("✅ Product updated:", response.data);
+      } else {
+        response = await apiClient.post('/api/products/', productData);
+        console.log("✅ Product created:", response.data);
+      }
 
-      // Helper to sanitize large data (remove base64 previews) before storing
-      const sanitizeSellerForStorage = (seller) => {
-        const copy = { ...seller };
-        // Replace large base64 product images with placeholders to avoid exceeding storage
-        if (Array.isArray(copy.productImages)) {
-          copy.productImages = copy.productImages.map((img, idx) => {
-            if (typeof img === 'string' && img.startsWith('data:')) {
-              return `uploaded-image-${Date.now()}-${idx}`; // placeholder tag
-            }
-            return img;
-          });
-        } else {
-          copy.productImages = [];
-        }
+      const result = response.data;
 
-        if (typeof copy.shopImage === 'string' && copy.shopImage.startsWith('data:')) {
-          copy.shopImage = "https://images.unsplash.com/photo-1563013544-824ae1b704d3?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80";
-        }
-
-        return copy;
-      };
-
-      // Add sanitized seller to the list and try to store; on quota error, progressively trim data
-      const sanitized = sanitizeSellerForStorage(sellerDataToStore);
-      existingSellers.push(sanitized);
-
+      let allSellers = [];
       try {
-        localStorage.setItem('allSellersData', JSON.stringify(existingSellers));
+        allSellers = JSON.parse(localStorage.getItem('allSellersData') || '[]');
       } catch (e) {
-        console.warn('Failed saving allSellersData, trying fallback cleanup:', e);
-
-        // First, remove productImages from all sellers to free space
-        const stripped = existingSellers.map(s => ({ ...s, productImages: [], shopImage: s.shopImage && s.shopImage.startsWith('data:') ? "https://images.unsplash.com/photo-1563013544-824ae1b704d3?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80" : s.shopImage }));
-        try {
-          localStorage.setItem('allSellersData', JSON.stringify(stripped));
-          setSuccess(prev => prev + ' (Images not saved due to storage limits)');
-        } catch (e2) {
-          console.warn('Still failing to save after stripping images, removing demo sellers...', e2);
-
-          // Remove demo sellers first
-          let filtered = stripped.filter(s => !(s.id && String(s.id).startsWith('demo-seller-')));
-          try {
-            localStorage.setItem('allSellersData', JSON.stringify(filtered));
-            setSuccess(prev => prev + ' (Cleared demo data to save registration)');
-          } catch (e3) {
-            console.error('Unable to save registration to localStorage due to quota limits:', e3);
-            // As last resort, store only the newly registered seller alone
-            try {
-              localStorage.setItem('allSellersData', JSON.stringify([sanitized]));
-              setSuccess(prev => prev + ' (Stored only your registration due to limited storage)');
-            } catch (e4) {
-              console.error('Final fallback failed, cannot persist sellers locally:', e4);
-              setError('Registration completed but unable to save data locally due to browser storage limits.');
-            }
-          }
-        }
+        allSellers = [];
       }
-
-      // Store for admin management
-      const registrationData = {
-        id: sellerId,
-        shopName: formData.shopName,
-        sellerName: formData.sellerName,
-        phoneNumber: formData.phoneNumber,
-        region: formData.region,
-        district: formData.district,
-        mainCategory: formData.mainCategory,
-        productName: formData.productName,
-        price: formData.price,
-        registrationDate: new Date().toLocaleString(),
-        status: "pending"
+      
+      const sellerDataToStore = {
+        id: result.id || Date.now(),
+        email: authUser.email,
+        name: authUser.name || authUser.displayName || authUser.email?.split('@')[0] || "Seller",
+        displayName: authUser.name || authUser.displayName || authUser.email?.split('@')[0] || "Seller",
+        picture: userPicture,
+        photo: userPicture,
+        ...formData,
+        businessType: "Retail Shop",
+        productImages: productImagesData,
+        shopImage: shopImageData,
+        registrationDate: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
       };
+      
+      const existingIndex = allSellers.findIndex(seller => 
+        seller.id === sellerDataToStore.id || 
+        (seller.email?.toLowerCase() === authUser.email?.toLowerCase() && seller.productName === formData.productName)
+      );
+      
+      if (existingIndex !== -1) {
+        allSellers[existingIndex] = sellerDataToStore;
+      } else {
+        allSellers.push(sellerDataToStore);
+      }
+      
+      saveToAllStorages('allSellersData', JSON.stringify(allSellers));
 
-      const existingRegistrations = JSON.parse(localStorage.getItem('sellerRegistrations') || '[]');
-      existingRegistrations.push(registrationData);
-      localStorage.setItem('sellerRegistrations', JSON.stringify(existingRegistrations));
-
-      // Add demo sellers if this is the first registration
-      if (existingSellers.length <= 1) {
-        addDemoSellers();
+      if (!isVendorRegistered(authUser.email)) {
+        registerVendorToContext(sellerDataToStore);
       }
 
-      // Show success message and show credential setup step
-      setSuccess("🎉 Registration successful! Set your password below (you can change it if you want)");
-      setIsLoading(false);
+      dispatchProductsUpdatedEvent(isEditOperation ? 'update' : 'add', sellerDataToStore);
 
-      // Generate a temporary password and show credential UI
-      const genPass = generateRandomPassword();
-      setGeneratedPassword(genPass);
-      setTempPassword(genPass);
-      setCreatedSellerId(sellerId);
-      setShowCredentialsStep(true);
-
-      // Also pre-fill just-registered email so login can be prefilled later
-      localStorage.setItem("justRegisteredEmail", formData.email || formData.phoneNumber);
-      localStorage.setItem("justRegisteredPassword", genPass);
-
-      // Redirect to vendor login so the user can sign in (login will be prefilled)
+      const successMessage = isEditOperation 
+        ? "✅ Product updated successfully! Redirecting to your profile..." 
+        : "✅ Registration successful! Redirecting to your profile...";
+      
+      setSuccess(successMessage);
+      
+      // 🔥 DON'T SET isSubmitting FALSE - we're navigating away
+      
       setTimeout(() => {
-        navigate('/vendor-login');
+        navigate('/seller-profile', { 
+          replace: true,
+          state: { 
+            success: isEditOperation ? "Product updated successfully!" : "Registration completed successfully!" 
+          }
+        });
       }, 1500);
 
     } catch (error) {
-      console.error("Registration error:", error);
-      setError("Registration error: " + error.message);
-      setIsLoading(false);
-    }
-  };
-
-  // Add demo sellers for testing
-  const addDemoSellers = () => {
-    const demoCategories = ["Electronics & Computers", "Fashion & Clothing", "Beauty & Personal Care", 
-                          "Home Appliances", "Vehicles & Auto Parts", "General Goods"];
-    
-    const demoProducts = [
-      // Electronics
-      "HP Laptop Probook", "Dell XPS 13", "iPhone 13 Pro", "Samsung Galaxy S22",
-      // Fashion
-      "Nike Air Max Shoes", "Levi's Jeans", "Gucci Handbag", "Ray-Ban Sunglasses",
-      // Beauty
-      "L'Oréal Shampoo", "MAC Lipstick", "Chanel Perfume", "Nivea Body Lotion",
-      // Home Appliances
-      "LG Refrigerator", "Samsung TV", "Philips Blender", "Moulinex Iron",
-      // Vehicles
-      "Toyota Corolla", "Honda Motorcycle", "Car Audio System", "Car Tires",
-      // General
-      "Office Chair", "Kitchen Set", "Sports Shoes", "School Bag"
-    ];
-    
-    const demoSellers = [];
-    
-    for (let i = 1; i <= 15; i++) {
-      const categoryIndex = i % demoCategories.length;
-      const mainCategory = demoCategories[categoryIndex];
-      const productIndex = i % demoProducts.length;
-      const product = demoProducts[productIndex];
+      console.error("❌ Registration error:", error);
       
-      let subCategory = "";
-      let region = "";
+      const errorMessage = error.response?.data?.detail || 
+                          error.response?.data?.message || 
+                          error.message || 
+                          "Registration failed. Please try again.";
       
-      // Assign appropriate sub-category based on main category
-      if (mainCategory === "Electronics & Computers") {
-        subCategory = i % 2 === 0 ? "Laptops" : "Smartphones";
-        region = "Dar es Salaam";
-      } else if (mainCategory === "Fashion & Clothing") {
-        subCategory = i % 2 === 0 ? "Clothing" : "Footwear";
-        region = "Arusha";
-      } else if (mainCategory === "Beauty & Personal Care") {
-        subCategory = i % 2 === 0 ? "Skincare" : "Fragrances";
-        region = "Mwanza";
-      } else if (mainCategory === "Home Appliances") {
-        subCategory = i % 2 === 0 ? "Kitchen Appliances" : "Home Electronics";
-        region = "Mbeya";
-      } else if (mainCategory === "Vehicles & Auto Parts") {
-        subCategory = i % 2 === 0 ? "Cars" : "Auto Parts";
-        region = "Dodoma";
-      } else {
-        subCategory = "General Goods";
-        region = "Tanga";
+      setError(errorMessage);
+      
+      if (error.response) {
+        console.error("🔍 Error status:", error.response.status);
+        console.error("🔍 Error data:", error.response.data);
       }
       
-      demoSellers.push({
-        id: `demo-seller-${i}`,
-        shopName: `${mainCategory.split(' ')[0]} Shop ${i}`,
-        sellerName: `Seller ${i}`,
-        phoneNumber: `+255 7${Math.floor(Math.random() * 90000000 + 10000000)}`,
-        email: `seller${i}@example.com`,
-        businessType: ["Retail Shop", "Wholesaler", "Online Store"][i % 3],
-        region: region,
-        district: `${region} District`,
-        area: `Area ${i % 5 + 1}`,
-        street: `Street ${i}`,
-        mainCategory: mainCategory,
-        subCategory: subCategory,
-        productName: product,
-        brand: product.includes("HP") ? "HP" : product.includes("Dell") ? "Dell" : 
-               product.includes("Nike") ? "Nike" : product.includes("LG") ? "LG" : 
-               product.includes("Toyota") ? "Toyota" : "Various",
-        stockStatus: i % 3 === 0 ? "Limited" : "Available",
-        quantityAvailable: Math.floor(Math.random() * 50).toString(),
-        price: `${(Math.floor(Math.random() * 500) + 50) * 1000} TZS`,
-        priceType: i % 2 === 0 ? "Fixed" : "Negotiable",
-        warranty: i % 2 === 0 ? "Yes" : "No",
-        productImages: [`https://images.unsplash.com/photo-${149+i}?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80`],
-        shopImage: `https://images.unsplash.com/photo-${160+i}?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80`,
-        isVerified: i % 3 !== 0,
-        registrationDate: new Date(Date.now() - Math.random() * 10000000000).toISOString(),
-        status: i % 3 === 0 ? "pending" : "active"
-      });
+      // 🔥 Allow retry on error
+      setIsSubmitting(false);
     }
-    
-    // Get existing sellers
-    const existingSellers = JSON.parse(localStorage.getItem('allSellersData') || '[]');
-    
-    // Add demo sellers
-    const allSellers = [...existingSellers, ...demoSellers];
-    localStorage.setItem('allSellersData', JSON.stringify(allSellers));
-    
-    console.log(`Added ${demoSellers.length} demo sellers to localStorage`);
-  };
-
-  // Generate a simple random password
-  const generateRandomPassword = (length = 8) => {
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()';
-    let result = '';
-    for (let i = 0; i < length; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-  };
-
-  const handleSaveCredentials = (saveAndLogin = false) => {
-    try {
-      if (!tempPassword || tempPassword.length < 6) {
-        setError('Password must be at least 6 characters long');
-        return;
-      }
-
-      const allSellers = JSON.parse(localStorage.getItem('allSellersData') || '[]');
-      const updatedSellers = allSellers.map(s => {
-        if (s.id === createdSellerId) {
-          return { ...s, password: tempPassword };
-        }
-        return s;
-      });
-      // Try to save updated sellers; handle quota errors by stripping images then retrying
-      try {
-        localStorage.setItem('allSellersData', JSON.stringify(updatedSellers));
-      } catch (e) {
-        console.warn('Failed to update allSellersData when saving credentials, retrying without images', e);
-        const stripped = updatedSellers.map(s => ({ ...s, productImages: [], shopImage: s.shopImage && s.shopImage.startsWith('data:') ? "https://images.unsplash.com/photo-1563013544-824ae1b704d3?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80" : s.shopImage }));
-        try {
-          localStorage.setItem('allSellersData', JSON.stringify(stripped));
-        } catch (e2) {
-          console.error('Still failed to update allSellersData after stripping images', e2);
-          // Best-effort: store only the updated seller
-          try {
-            const updatedOnly = stripped.filter(s => s.id === createdSellerId);
-            localStorage.setItem('allSellersData', JSON.stringify(updatedOnly));
-          } catch (e3) {
-            console.error('Final fallback failed to persist seller password', e3);
-            setError('Could not save password due to browser storage limits. You can still log in with the generated password (it was stored temporarily).');
-          }
-        }
-      }
-
-      // Update currentSeller if it matches
-      const currentSeller = JSON.parse(localStorage.getItem('currentSeller') || 'null');
-      if (currentSeller && currentSeller.id === createdSellerId) {
-        localStorage.setItem('currentSeller', JSON.stringify({ ...currentSeller, password: tempPassword }));
-      }
-
-      // Keep the email/password available briefly to prefill login
-      localStorage.setItem('justRegisteredEmail', formData.email || formData.phoneNumber);
-      localStorage.setItem('justRegisteredPassword', tempPassword);
-
-      setSuccess('✅ Password saved. You can now sign in using your email and password.');
-      setShowCredentialsStep(false);
-
-      if (saveAndLogin) {
-        // Redirect to login page after a short delay
-        setTimeout(() => navigate('/vendor-login'), 1200);
-      }
-    } catch (err) {
-      console.error('Error saving credentials:', err);
-      setError('Error saving credentials. Please try again.');
-    }
-  };
-
-  const handleSkipToLogin = () => {
-    // If skipping, we still saved the generated password into localStorage for prefill, but didn't attach it to seller record.
-    localStorage.setItem('justRegisteredEmail', formData.email || formData.phoneNumber);
-    localStorage.setItem('justRegisteredPassword', generatedPassword);
-    setShowCredentialsStep(false);
-    setTimeout(() => navigate('/vendor-login'), 500);
-  };
-
-  const handleMouseEnter = (button) => {
-    setIsHovering(prev => ({ ...prev, [button]: true }));
-  };
-
-  const handleMouseLeave = (button) => {
-    setIsHovering(prev => ({ ...prev, [button]: false }));
+    // 🔥 NOT setting isSubmitting false on success - we're navigating away
   };
 
   const removeProductImage = (index) => {
@@ -687,84 +870,90 @@ function VendorRegister() {
     }));
   };
 
+  if (isLoading && currentStep === 1) {
+    return (
+      <div style={{ 
+        height: "100vh", 
+        width: "100vw",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#ffffff"
+      }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{
+            width: "40px",
+            height: "40px",
+            border: "3px solid rgba(0,0,0,0.1)",
+            borderTop: "3px solid #FF6B6B",
+            borderRadius: "50%",
+            animation: "spin 0.8s linear infinite",
+            margin: "0 auto 15px"
+          }}></div>
+          <p style={{ 
+            color: "#5f6368", 
+            fontSize: "14px",
+            fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif"
+          }}>
+            Loading...
+          </p>
+        </div>
+        <style>{`
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
         minHeight: "100vh",
-        background: "linear-gradient(135deg, #ffffff, #f8f9fa, #e9ecef, #dee2e6)",
-        position: "relative",
-        overflow: "hidden",
+        backgroundColor: "#FFFFFF",
         padding: "20px 0"
       }}
+      id="vendor-register-top"
     >
-      {/* Background Pattern */}
-      <div style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        width: "100%",
-        height: "100%",
-        pointerEvents: "none",
-        zIndex: 0,
-        opacity: 0.05,
-        backgroundImage: `repeating-linear-gradient(
-          45deg,
-          #FF6B6B,
-          #FF6B6B 10px,
-          transparent 10px,
-          transparent 20px
-        )`
-      }}></div>
-
-      <div className="container col-md-10 col-lg-8" style={{ position: "relative", zIndex: 2 }}>
-        {/* Animated Header */}
-        <div className="text-center mb-4">
+      <div className="container" style={{ maxWidth: "800px" }}>
+        {/* Header */}
+        <div className="text-center mb-5">
           <div style={{
-            display: "inline-block",
-            position: "relative",
-            marginBottom: "1rem"
+            width: "80px",
+            height: "80px",
+            backgroundColor: "#f8f9fa",
+            borderRadius: "16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            margin: "0 auto 20px",
+            border: "2px solid #000000"
           }}>
-            <div style={{
-              position: "absolute",
-              top: "50%",
-              left: "50%",
-              transform: "translate(-50%, -50%)",
-              width: "120px",
-              height: "120px",
-              border: "2px dashed rgba(255, 107, 107, 0.3)",
-              borderRadius: "50%",
-              animation: "spin 20s linear infinite"
-            }}></div>
-            
-            <div style={{
-              width: "100px",
-              height: "100px",
-              background: "linear-gradient(135deg, #FF6B6B, #FF8E53)",
-              borderRadius: "20px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "white",
-              fontSize: "3rem",
-              fontWeight: "bold",
-              margin: "0 auto",
-              position: "relative",
-              zIndex: 2,
-              boxShadow: "0 15px 35px rgba(255, 107, 107, 0.4)",
-              transform: "rotate(-5deg)"
-            }}>
-              🏪
-            </div>
+            <span style={{ fontSize: "2rem", color: "#000000" }}>
+              {location.state?.action === "edit-product" ? "✏️" : "🏪"}
+            </span>
           </div>
           
           <h1 className="mb-2" style={{
-            color: "#333333",
-            fontWeight: "bold",
-            fontSize: "2.5rem"
+            color: "#000000",
+            fontWeight: "700",
+            fontSize: "2rem"
           }}>
-            Seller Registration
+            {location.state?.action === "edit-product" 
+              ? "Edit Your Product" 
+              : location.state?.action === "add-product" 
+                ? "Add New Product"
+                : "Complete Your Seller Registration"}
           </h1>
-          <p className="text-muted">Register your shop and list your products on Availo</p>
+          <p className="text-muted" style={{ fontSize: "0.95rem" }}>
+            {location.state?.action === "edit-product"
+              ? "Update your product details"
+              : location.state?.action === "add-product"
+                ? "Add a new product to your shop"
+                : "Add your shop details and list your products"}
+          </p>
         </div>
 
         {/* Progress Bar */}
@@ -774,27 +963,28 @@ function VendorRegister() {
             justifyContent: "space-between",
             marginBottom: "0.5rem"
           }}>
-            {["Shop Info", "Location", "Products", "Confirmation"].map((step, index) => (
+            {["Shop Details", "Product Info", "Confirmation"].map((step, index) => (
               <div key={index} className="text-center" style={{ flex: 1 }}>
                 <div style={{
                   width: "40px",
                   height: "40px",
-                  borderRadius: "50%",
-                  background: currentStep > index + 1 ? "#FF6B6B" : currentStep === index + 1 ? "#FF6B6B" : "rgba(255, 107, 107, 0.2)",
-                  color: "white",
+                  borderRadius: "10px",
+                  backgroundColor: currentStep > index + 1 ? "rgba(0, 0, 0, 0.1)" : currentStep === index + 1 ? "rgba(0, 0, 0, 0.1)" : "#f8f9fa",
+                  color: currentStep > index + 1 ? "#000000" : currentStep === index + 1 ? "#000000" : "#666",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   margin: "0 auto 0.5rem",
-                  border: currentStep === index + 1 ? "2px solid #FF8E53" : "none",
-                  boxShadow: currentStep === index + 1 ? "0 0 15px rgba(255, 107, 107, 0.5)" : "none"
+                  border: currentStep === index + 1 ? "2px solid #000000" : "2px solid #d0d0d0",
+                  fontWeight: "600",
+                  fontSize: "1.1rem"
                 }}>
                   {currentStep > index + 1 ? "✓" : index + 1}
                 </div>
                 <span style={{
-                  color: currentStep === index + 1 ? "#FF6B6B" : "#666666",
-                  fontSize: "0.9rem",
-                  fontWeight: currentStep === index + 1 ? "bold" : "normal"
+                  color: currentStep === index + 1 ? "#000000" : "#666",
+                  fontSize: "0.85rem",
+                  fontWeight: currentStep === index + 1 ? "600" : "400"
                 }}>
                   {step}
                 </span>
@@ -804,275 +994,247 @@ function VendorRegister() {
           
           <div style={{
             height: "6px",
-            background: "rgba(255, 107, 107, 0.1)",
+            backgroundColor: "#f8f9fa",
             borderRadius: "3px",
             overflow: "hidden",
-            marginBottom: "2rem"
+            marginBottom: "2rem",
+            border: "1px solid #d0d0d0"
           }}>
             <div style={{
               height: "100%",
               width: `${progress}%`,
-              background: "linear-gradient(90deg, #FF6B6B, #FF8E53)",
+              backgroundColor: "#000000",
               borderRadius: "3px",
-              transition: "width 0.5s ease",
-              position: "relative"
-            }}>
-              <div style={{
-                position: "absolute",
-                right: "-5px",
-                top: "-2px",
-                width: "10px",
-                height: "10px",
-                background: "#FF8E53",
-                borderRadius: "50%",
-                boxShadow: "0 0 10px rgba(255, 142, 83, 0.8)"
-              }}></div>
-            </div>
+              transition: "width 0.3s ease"
+            }}></div>
           </div>
         </div>
 
-        <div className="card shadow border-0 rounded-4 overflow-hidden" style={{
-          background: "linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.98))",
-          border: "2px solid rgba(255, 107, 107, 0.1)"
+        {/* Registration Form Card */}
+        <div className="card" style={{
+          border: "2px solid #d0d0d0",
+          borderRadius: "24px",
+          backgroundColor: "#FFFFFF",
+          overflow: "hidden"
         }}>
           <div className="card-header" style={{
-            background: "linear-gradient(90deg, rgba(255, 107, 107, 0.1), rgba(255, 142, 83, 0.1))",
-            borderBottom: "1px solid rgba(255, 107, 107, 0.2)"
+            backgroundColor: "#f8f9fa",
+            borderBottom: "2px solid #d0d0d0",
+            padding: "20px 24px"
           }}>
             <div className="d-flex justify-content-between align-items-center">
-              <h3 className="mb-0" style={{ color: "#333333" }}>
-                Step {currentStep}: {currentStep === 1 ? "Shop Information" : currentStep === 2 ? "Shop Location" : currentStep === 3 ? "Product Details" : "Confirmation"}
+              <h3 className="mb-0" style={{ color: "#000000", fontSize: "1.3rem", fontWeight: "600" }}>
+                Step {currentStep}: {currentStep === 1 ? "Shop Details" : currentStep === 2 ? "Product Information" : "Confirmation"}
               </h3>
               <span className="badge" style={{
-                background: "rgba(255, 107, 107, 0.2)",
-                color: "#FF6B6B",
-                padding: "8px 15px",
-                borderRadius: "20px",
-                fontWeight: "bold"
+                backgroundColor: "rgba(0, 0, 0, 0.1)",
+                color: "#000000",
+                padding: "8px 16px",
+                borderRadius: "8px",
+                fontWeight: "600",
+                fontSize: "0.9rem",
+                border: "2px solid #d0d0d0"
               }}>
-                🧾 Seller Form
+                {location.state?.action === "edit-product" ? "✏️ Edit Product" : 
+                 location.state?.action === "add-product" ? "➕ Add Product" : 
+                 "🧾 Complete Registration"}
               </span>
             </div>
           </div>
 
           <div className="card-body p-4">
             {error && (
-              <div className="alert alert-danger d-flex align-items-center" role="alert" style={{
-                background: "rgba(255, 107, 107, 0.1)",
-                border: "1px solid rgba(255, 107, 107, 0.3)",
-                color: "#FF6B6B"
+              <div className="alert alert-danger d-flex align-items-center mb-4" role="alert" style={{
+                borderRadius: "16px",
+                padding: "14px 18px",
+                fontSize: "0.95rem",
+                border: "2px solid rgba(220, 53, 69, 0.3)",
+                backgroundColor: "rgba(220, 53, 69, 0.08)"
               }}>
-                <i className="fas fa-exclamation-triangle me-2"></i>
+                <i className="fas fa-exclamation-triangle me-2" style={{ color: "#dc3545" }}></i>
                 {error}
               </div>
             )}
 
             {success && (
-              <div className="alert alert-success d-flex align-items-center" role="alert" style={{
-                background: "rgba(78, 205, 196, 0.1)",
-                border: "1px solid rgba(78, 205, 196, 0.3)",
-                color: "#4ECDC4"
+              <div className="alert alert-success d-flex align-items-center mb-4" role="alert" style={{
+                borderRadius: "16px",
+                padding: "14px 18px",
+                fontSize: "0.95rem",
+                border: "2px solid rgba(40, 167, 69, 0.3)",
+                backgroundColor: "rgba(40, 167, 69, 0.08)"
               }}>
-                <i className="fas fa-check-circle me-2"></i>
+                <i className="fas fa-check-circle me-2" style={{ color: "#28a745" }}></i>
                 {success}
               </div>
             )}
 
-            {/* Credential setup: show email and auto-generated password, allow edit and save */}
-            {showCredentialsStep && (
-              <div className="card mt-3 p-3" style={{ border: '1px solid rgba(0,0,0,0.05)', background: '#fff' }}>
-                <h5 className="mb-3">Your account details</h5>
-                <div className="mb-2">
-                  <label className="form-label">Registered Email</label>
-                  <input className="form-control" value={formData.email || formData.phoneNumber} readOnly />
+            <div className="alert alert-info mb-4" style={{
+              backgroundColor: "rgba(0, 0, 0, 0.05)",
+              border: "2px solid rgba(0, 0, 0, 0.3)",
+              color: "#333",
+              borderRadius: "16px",
+              padding: "14px 18px",
+              fontSize: "0.95rem"
+            }}>
+              <div className="d-flex align-items-center">
+                <div className="me-3">
+                  <ProfileImage size={60} showBorder={true} />
                 </div>
-
-                <div className="mb-3">
-                  <label className="form-label">Password (auto-generated)</label>
-                  <div className="input-group">
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={tempPassword}
-                      onChange={(e) => setTempPassword(e.target.value)}
-                      placeholder="Set password or keep the generated one"
-                    />
-                    <button type="button" className="btn btn-outline-secondary" onClick={() => { const p = generateRandomPassword(); setTempPassword(p); setGeneratedPassword(p); }}>
-                      Regenerate
-                    </button>
+                <div>
+                  <strong style={{ fontSize: "1.1rem" }}>Registering as:</strong> 
+                  <span style={{ fontWeight: "600", marginLeft: "4px" }}>
+                    {authUser?.name || authUser?.displayName || authUser?.email?.split('@')[0] || "Seller"}
+                  </span>
+                  <div className="text-muted" style={{ fontSize: "0.85rem", marginTop: "2px" }}>
+                    <i className="fab fa-google me-1" style={{ color: "#DB4437" }}></i>
+                    Google Account • {authUser?.email}
                   </div>
-                  <div className="form-text">Make sure to choose a password that you can remember (min 6 characters).</div>
-                </div>
-
-                <div className="d-flex gap-2">
-                  <button type="button" className="btn btn-primary" onClick={() => handleSaveCredentials(true)}>Save & go to Login</button>
-                  <button type="button" className="btn btn-outline-secondary" onClick={handleSkipToLogin}>Skip & go to Login</button>
+                  {getUserProfilePicture() && getUserProfilePicture().includes('googleusercontent.com') && (
+                    <div className="mt-1">
+                      <span style={{ 
+                        fontSize: "0.75rem", 
+                        backgroundColor: "#28a745", 
+                        color: "white", 
+                        padding: "2px 8px", 
+                        borderRadius: "12px",
+                        display: "inline-block"
+                      }}>
+                        <i className="fas fa-check-circle me-1"></i>
+                        PERMANENT Google profile picture
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
+            </div>
 
-            <form onSubmit={currentStep === 4 ? handleSubmit : (e) => { e.preventDefault(); nextStep(); }}>
+            <form onSubmit={currentStep === 3 ? handleSubmit : (e) => { e.preventDefault(); nextStep(); }}>
               {/* Step 1: Shop Information */}
               {currentStep === 1 && (
-                <div style={{ animation: "fadeIn 0.5s ease" }}>
-                  <h5 className="mb-4" style={{ color: "#333333" }}>
-                    <i className="fas fa-store me-2" style={{ color: "#FF6B6B" }}></i>
+                <div>
+                  <h5 className="mb-4" style={{ color: "#000000", fontSize: "1.1rem", fontWeight: "600" }}>
+                    <i className="fas fa-store me-2" style={{ color: "#000000" }}></i>
                     A. Taarifa za Duka
                   </h5>
                   <div className="row">
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="shopName" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                      <label htmlFor="shopName" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                         Shop Name <span className="text-danger">*</span>
                       </label>
                       <input
+                        ref={el => fieldRefs.current['shopName'] = el}
                         type="text"
-                        className="form-control rounded-3"
+                        className={`form-control ${incompleteFields.includes('shopName') ? 'incomplete-field' : ''} ${animateField === 'shopName' ? 'field-animation' : ''}`}
                         id="shopName"
                         name="shopName"
                         value={formData.shopName}
                         onChange={handleInputChange}
                         required
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         placeholder="e.g., Tech Hub Computer Store"
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       />
+                      {incompleteFields.includes('shopName') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          Shop name is required
+                        </small>
+                      )}
                     </div>
 
+                    {/* Country Selection - Fixed to Tanzania */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="sellerName" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                        Seller Full Name <span className="text-danger">*</span>
+                      <label htmlFor="country" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
+                        Country <span className="text-danger">*</span>
                       </label>
                       <input
                         type="text"
-                        className="form-control rounded-3"
-                        id="sellerName"
-                        name="sellerName"
-                        value={formData.sellerName}
-                        onChange={handleInputChange}
-                        required
-                        disabled={isLoading}
-                        placeholder="Your full name"
+                        className="form-control"
+                        id="country"
+                        name="country"
+                        value="Tanzania"
+                        readOnly
+                        disabled
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#f8f9fa",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       />
+                      <small className="text-muted" style={{ fontSize: "0.85rem" }}>
+                        Currency: Tanzanian Shilling (TZS)
+                      </small>
                     </div>
 
+                    {/* WhatsApp Number Field */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="phoneNumber" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                        Phone Number (Call/WhatsApp) <span className="text-danger">*</span>
-                      </label>
-                      <div className="input-group">
-                        <span className="input-group-text" style={{
-                          background: "rgba(255, 107, 107, 0.1)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#FF6B6B"
-                        }}>+255</span>
-                        <input
-                          type="tel"
-                          className="form-control rounded-3"
-                          id="phoneNumber"
-                          name="phoneNumber"
-                          placeholder="712345678"
-                          pattern="[0-9]{9}"
-                          value={formData.phoneNumber}
-                          onChange={handleInputChange}
-                          required
-                          disabled={isLoading}
-                          style={{
-                            background: "rgba(255, 255, 255, 0.9)",
-                            border: "1px solid rgba(255, 107, 107, 0.3)",
-                            color: "#333333",
-                            padding: "12px 15px"
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="col-md-6 mb-3">
-                      <label htmlFor="email" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                        Email Address (optional)
+                      <label htmlFor="whatsappNumber" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
+                        WhatsApp Number <span className="text-danger">*</span>
+                        <i className="fab fa-whatsapp ms-2" style={{ color: "#25D366" }}></i>
                       </label>
                       <input
-                        type="email"
-                        className="form-control rounded-3"
-                        id="email"
-                        name="email"
-                        value={formData.email}
-                        onChange={handleInputChange}
-                        disabled={isLoading}
-                        placeholder="shop@example.com"
-                        style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
-                        }}
-                      />
-                    </div>
-
-                    <div className="col-md-6 mb-3">
-                      <label htmlFor="businessType" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                        Business Type <span className="text-danger">*</span>
-                      </label>
-                      <select
-                        className="form-select rounded-3"
-                        id="businessType"
-                        name="businessType"
-                        value={formData.businessType}
+                        ref={el => fieldRefs.current['whatsappNumber'] = el}
+                        type="tel"
+                        className={`form-control ${incompleteFields.includes('whatsappNumber') ? 'incomplete-field' : ''} ${animateField === 'whatsappNumber' ? 'field-animation' : ''}`}
+                        id="whatsappNumber"
+                        name="whatsappNumber"
+                        value={formData.whatsappNumber}
                         onChange={handleInputChange}
                         required
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
+                        placeholder="e.g., 255712345678 au +255712345678"
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
-                      >
-                        <option value="">Select Business Type</option>
-                        {businessTypes.map(type => (
-                          <option key={type} value={type}>{type}</option>
-                        ))}
-                      </select>
+                      />
+                      <small className="text-muted d-block mt-1" style={{ fontSize: "0.85rem" }}>
+                        Wateja watakuwasiliana nawe kupitia namba hii ya WhatsApp
+                      </small>
+                      {incompleteFields.includes('whatsappNumber') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          WhatsApp number is required
+                        </small>
+                      )}
                     </div>
-                  </div>
-                </div>
-              )}
 
-              {/* Step 2: Location */}
-              {currentStep === 2 && (
-                <div style={{ animation: "fadeIn 0.5s ease" }}>
-                  <h5 className="mb-4" style={{ color: "#333333" }}>
-                    <i className="fas fa-map-marker-alt me-2" style={{ color: "#FF6B6B" }}></i>
-                    B. Mahali Duka Lilipo
-                  </h5>
-                  <div className="row">
+                    {/* Region */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="region" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                      <label htmlFor="region" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                         Region <span className="text-danger">*</span>
                       </label>
                       <select
-                        className="form-select rounded-3"
+                        ref={el => fieldRefs.current['region'] = el}
+                        className={`form-select ${incompleteFields.includes('region') ? 'incomplete-field' : ''} ${animateField === 'region' ? 'field-animation' : ''}`}
                         id="region"
                         name="region"
                         value={formData.region}
                         onChange={handleInputChange}
                         required
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       >
                         <option value="">Select Region</option>
@@ -1080,150 +1242,196 @@ function VendorRegister() {
                           <option key={region} value={region}>{region}</option>
                         ))}
                       </select>
+                      {incompleteFields.includes('region') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          Region is required
+                        </small>
+                      )}
                     </div>
 
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="district" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                        District <span className="text-danger">*</span>
+                      <label htmlFor="district" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
+                        District / City <span className="text-danger">*</span>
                       </label>
                       <input
+                        ref={el => fieldRefs.current['district'] = el}
                         type="text"
-                        className="form-control rounded-3"
+                        className={`form-control ${incompleteFields.includes('district') ? 'incomplete-field' : ''} ${animateField === 'district' ? 'field-animation' : ''}`}
                         id="district"
                         name="district"
                         value={formData.district}
                         onChange={handleInputChange}
                         required
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         placeholder="e.g., Ilala, Kinondoni"
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       />
+                      {incompleteFields.includes('district') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          District is required
+                        </small>
+                      )}
                     </div>
 
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="area" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                      <label htmlFor="area" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                         Area / Ward <span className="text-danger">*</span>
                       </label>
                       <input
+                        ref={el => fieldRefs.current['area'] = el}
                         type="text"
-                        className="form-control rounded-3"
+                        className={`form-control ${incompleteFields.includes('area') ? 'incomplete-field' : ''} ${animateField === 'area' ? 'field-animation' : ''}`}
                         id="area"
                         name="area"
                         value={formData.area}
                         onChange={handleInputChange}
                         required
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         placeholder="e.g., Kariakoo, Masaki"
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       />
+                      {incompleteFields.includes('area') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          Area is required
+                        </small>
+                      )}
                     </div>
 
+                   
+                    {/* Map Location Field - Optional */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="street" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                        Street / Landmark
+                      <label htmlFor="mapLocation" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
+                        Google Map Location (Optional)
                       </label>
                       <input
                         type="text"
-                        className="form-control rounded-3"
-                        id="street"
-                        name="street"
-                        value={formData.street}
-                        onChange={handleInputChange}
-                        disabled={isLoading}
-                        placeholder="e.g., Samora Avenue, Near Post Office"
-                        style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
-                        }}
-                      />
-                    </div>
-
-                    <div className="col-md-6 mb-3">
-                      <label htmlFor="mapLocation" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                        Google Map Location (Pin)
-                      </label>
-                      <input
-                        type="text"
-                        className="form-control rounded-3"
+                        className="form-control"
                         id="mapLocation"
                         name="mapLocation"
                         value={formData.mapLocation}
                         onChange={handleInputChange}
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         placeholder="Paste Google Maps link"
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       />
                     </div>
 
+                    {/* Opening Hours Field - Optional */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="openingHours" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                        Opening Hours
+                      <label htmlFor="openingHours" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
+                        Opening Hours (Optional)
                       </label>
                       <input
                         type="text"
-                        className="form-control rounded-3"
+                        className="form-control"
                         id="openingHours"
                         name="openingHours"
                         value={formData.openingHours}
                         onChange={handleInputChange}
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         placeholder="e.g., Mon-Fri 8AM-6PM, Sat 9AM-4PM"
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       />
+                    </div>
+
+                    {/* Currency Info Display */}
+                    <div className="col-md-6 mb-3">
+                      <div className="card" style={{
+                        backgroundColor: "#f8f9fa",
+                        border: "2px solid #d0d0d0",
+                        borderRadius: "16px",
+                        padding: "12px"
+                      }}>
+                        <div className="d-flex align-items-center">
+                          <div style={{
+                            width: "40px",
+                            height: "40px",
+                            borderRadius: "8px",
+                            backgroundColor: "#1B5E20",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: "#FFFFFF",
+                            marginRight: "12px",
+                            fontSize: "18px"
+                          }}>
+                            TZS
+                          </div>
+                          <div>
+                            <h6 className="mb-0" style={{ fontSize: "0.95rem", fontWeight: "600" }}>
+                              Tanzanian Shilling (TZS)
+                            </h6>
+                            <small className="text-muted">
+                              All prices will be displayed in Tanzanian Shillings
+                            </small>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Step 3: Product Details */}
-              {currentStep === 3 && (
-                <div style={{ animation: "fadeIn 0.5s ease" }}>
-                  <h5 className="mb-4" style={{ color: "#333333" }}>
-                    <i className="fas fa-box me-2" style={{ color: "#FF6B6B" }}></i>
-                    C. Taarifa za Bidhaa
+              {/* Step 2: Product Details */}
+              {currentStep === 2 && (
+                <div>
+                  <h5 className="mb-4" style={{ color: "#000000", fontSize: "1.1rem", fontWeight: "600" }}>
+                    <i className="fas fa-box me-2" style={{ color: "#000000" }}></i>
+                    B. Taarifa za Bidhaa
                   </h5>
                   
                   <div className="row">
-                    {/* Main Category */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="mainCategory" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                      <label htmlFor="mainCategory" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                         Main Category <span className="text-danger">*</span>
                       </label>
                       <select
-                        className="form-select rounded-3"
+                        ref={el => fieldRefs.current['mainCategory'] = el}
+                        className={`form-select ${incompleteFields.includes('mainCategory') ? 'incomplete-field' : ''} ${animateField === 'mainCategory' ? 'field-animation' : ''}`}
                         id="mainCategory"
                         name="mainCategory"
                         value={formData.mainCategory}
                         onChange={handleInputChange}
                         required
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       >
                         <option value="">Select Main Category</option>
@@ -1231,25 +1439,32 @@ function VendorRegister() {
                           <option key={category} value={category}>{category}</option>
                         ))}
                       </select>
+                      {incompleteFields.includes('mainCategory') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          Main category is required
+                        </small>
+                      )}
                     </div>
 
-                    {/* Sub Category */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="subCategory" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                      <label htmlFor="subCategory" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                         Sub Category
                       </label>
                       <select
-                        className="form-select rounded-3"
+                        className="form-select"
                         id="subCategory"
                         name="subCategory"
                         value={formData.subCategory}
                         onChange={handleInputChange}
-                        disabled={isLoading || !formData.mainCategory || !subCategories[formData.mainCategory]}
+                        disabled={isLoading || isSubmitting || !formData.mainCategory || !subCategories[formData.mainCategory]}
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       >
                         <option value="">Select Sub Category</option>
@@ -1261,47 +1476,56 @@ function VendorRegister() {
                       </select>
                     </div>
 
-                    {/* Product Name */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="productName" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                      <label htmlFor="productName" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                         Product Name / Model <span className="text-danger">*</span>
                       </label>
                       <input
+                        ref={el => fieldRefs.current['productName'] = el}
                         type="text"
-                        className="form-control rounded-3"
+                        className={`form-control ${incompleteFields.includes('productName') ? 'incomplete-field' : ''} ${animateField === 'productName' ? 'field-animation' : ''}`}
                         id="productName"
                         name="productName"
                         value={formData.productName}
                         onChange={handleInputChange}
                         required
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         placeholder="e.g., HP ProBook 450 G8 / Nike Air Max"
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       />
+                      {incompleteFields.includes('productName') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          Product name is required
+                        </small>
+                      )}
                     </div>
 
-                    {/* Brand */}
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="brand" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                      <label htmlFor="brand" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                         Brand
                       </label>
                       <select
-                        className="form-select rounded-3"
+                        className="form-select"
                         id="brand"
                         name="brand"
                         value={formData.brand}
                         onChange={handleInputChange}
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       >
                         <option value="">Select Brand</option>
@@ -1311,23 +1535,70 @@ function VendorRegister() {
                       </select>
                     </div>
 
-                    {/* Condition */}
+                    <div className="col-12 mb-3">
+                      <label htmlFor="description" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
+                        Product Description <span className="text-danger">*</span>
+                        <span style={{ 
+                          fontSize: "0.8rem", 
+                          marginLeft: "10px",
+                          color: wordCount >= 200 ? "#dc3545" : "#28a745",
+                          fontWeight: "normal"
+                        }}>
+                          {wordCount}/200 maneno
+                        </span>
+                      </label>
+                      <textarea
+                        ref={el => fieldRefs.current['description'] = el}
+                        className={`form-control ${incompleteFields.includes('description') ? 'incomplete-field' : ''} ${animateField === 'description' ? 'field-animation' : ''}`}
+                        id="description"
+                        name="description"
+                        value={formData.description}
+                        onChange={handleInputChange}
+                        required
+                        disabled={isLoading || isSubmitting}
+                        placeholder="Describe your product in detail... (Max 200 words)"
+                        rows="4"
+                        style={{
+                          backgroundColor: "#FFFFFF",
+                          border: `2px solid ${wordCount >= 200 ? "#dc3545" : incompleteFields.includes('description') ? '#dc3545' : '#d0d0d0'}`,
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
+                        }}
+                      ></textarea>
+                      {wordCount >= 200 && (
+                        <small className="text-danger d-block mt-1">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          Umefikia kikomo cha maneno 200
+                        </small>
+                      )}
+                      {incompleteFields.includes('description') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          Description is required
+                        </small>
+                      )}
+                    </div>
+
                     <div className="col-md-6 mb-3">
-                      <label htmlFor="condition" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                      <label htmlFor="condition" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                         Condition
                       </label>
                       <select
-                        className="form-select rounded-3"
+                        className="form-select"
                         id="condition"
                         name="condition"
                         value={formData.condition}
                         onChange={handleInputChange}
-                        disabled={isLoading}
+                        disabled={isLoading || isSubmitting}
                         style={{
-                          background: "rgba(255, 255, 255, 0.9)",
-                          border: "1px solid rgba(255, 107, 107, 0.3)",
-                          color: "#333333",
-                          padding: "12px 15px"
+                          backgroundColor: "#FFFFFF",
+                          border: "2px solid #d0d0d0",
+                          color: "#333",
+                          padding: "14px 18px",
+                          borderRadius: "16px",
+                          fontSize: "1rem"
                         }}
                       >
                         {conditionOptions.map(condition => (
@@ -1336,19 +1607,18 @@ function VendorRegister() {
                       </select>
                     </div>
 
-                    {/* Specifications (for Electronics, Appliances, Vehicles) */}
                     {requiresSpecifications() && (
                       <div className="col-12 mb-3">
-                        <label htmlFor="specifications" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                        <label htmlFor="specifications" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                           Specifications / Details
                         </label>
                         <textarea
-                          className="form-control rounded-3"
+                          className="form-control"
                           id="specifications"
                           name="specifications"
                           value={formData.specifications}
                           onChange={handleInputChange}
-                          disabled={isLoading}
+                          disabled={isLoading || isSubmitting}
                           placeholder={
                             formData.mainCategory === "Electronics & Computers" 
                               ? "e.g., Intel i5, 8GB RAM, 512GB SSD, Windows 11" 
@@ -1358,109 +1628,117 @@ function VendorRegister() {
                           }
                           rows="3"
                           style={{
-                            background: "rgba(255, 255, 255, 0.9)",
-                            border: "1px solid rgba(255, 107, 107, 0.3)",
-                            color: "#333333",
-                            padding: "12px 15px"
+                            backgroundColor: "#FFFFFF",
+                            border: "2px solid #d0d0d0",
+                            color: "#333",
+                            padding: "14px 18px",
+                            borderRadius: "16px",
+                            fontSize: "1rem"
                           }}
                         ></textarea>
                       </div>
                     )}
 
-                    {/* Size, Color, Material (for Fashion) */}
                     {requiresFashionDetails() && (
                       <div className="row mb-3">
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="size" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="size" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Size (Optional)
                           </label>
                           <input
                             type="text"
-                            className="form-control rounded-3"
+                            className="form-control"
                             id="size"
                             name="size"
                             value={formData.size}
                             onChange={handleInputChange}
-                            disabled={isLoading}
+                            disabled={isLoading || isSubmitting}
                             placeholder="e.g., M, L, XL, 42, 10"
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: "2px solid #d0d0d0",
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           />
                         </div>
 
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="color" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="color" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Color (Optional)
                           </label>
                           <input
                             type="text"
-                            className="form-control rounded-3"
+                            className="form-control"
                             id="color"
                             name="color"
                             value={formData.color}
                             onChange={handleInputChange}
-                            disabled={isLoading}
+                            disabled={isLoading || isSubmitting}
                             placeholder="e.g., Red, Blue, Black"
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: "2px solid #d0d0d0",
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           />
                         </div>
 
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="material" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="material" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Material (Optional)
                           </label>
                           <input
                             type="text"
-                            className="form-control rounded-3"
+                            className="form-control"
                             id="material"
                             name="material"
                             value={formData.material}
                             onChange={handleInputChange}
-                            disabled={isLoading}
+                            disabled={isLoading || isSubmitting}
                             placeholder="e.g., Cotton, Leather, Silk"
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: "2px solid #d0d0d0",
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           />
                         </div>
                       </div>
                     )}
 
-                    {/* Stock Information */}
                     <div className="col-12 mb-4">
-                      <h6 className="mb-3" style={{ color: "#333333" }}>
-                        <i className="fas fa-cubes me-2" style={{ color: "#FF6B6B" }}></i>
-                        D. Upatikanaji wa Bidhaa
+                      <h6 className="mb-3" style={{ color: "#000000", fontSize: "1rem", fontWeight: "600" }}>
+                        <i className="fas fa-cubes me-2" style={{ color: "#000000" }}></i>
+                        C. Upatikanaji wa Bidhaa
                       </h6>
                       <div className="row">
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="stockStatus" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="stockStatus" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Stock Status
                           </label>
                           <select
-                            className="form-select rounded-3"
+                            className="form-select"
                             id="stockStatus"
                             name="stockStatus"
                             value={formData.stockStatus}
                             onChange={handleInputChange}
-                            disabled={isLoading}
+                            disabled={isLoading || isSubmitting}
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: "2px solid #d0d0d0",
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           >
                             {stockStatusOptions.map(status => (
@@ -1470,105 +1748,130 @@ function VendorRegister() {
                         </div>
 
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="quantityAvailable" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="quantityAvailable" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Quantity Available
                           </label>
                           <input
                             type="number"
-                            className="form-control rounded-3"
+                            className="form-control"
                             id="quantityAvailable"
                             name="quantityAvailable"
                             value={formData.quantityAvailable}
                             onChange={handleInputChange}
-                            disabled={isLoading}
+                            disabled={isLoading || isSubmitting}
                             min="0"
                             placeholder="e.g., 10"
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: "2px solid #d0d0d0",
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           />
                         </div>
 
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="lastUpdated" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="lastUpdated" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Last Updated (Auto)
                           </label>
                           <input
                             type="text"
-                            className="form-control rounded-3"
+                            className="form-control"
                             id="lastUpdated"
                             name="lastUpdated"
                             value={formData.lastUpdated}
                             readOnly
                             disabled
                             style={{
-                              background: "rgba(255, 255, 255, 0.7)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#666666",
-                              padding: "12px 15px"
+                              backgroundColor: "#f8f9fa",
+                              border: "2px solid #d0d0d0",
+                              color: "#666",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           />
                         </div>
                       </div>
                     </div>
 
-                    {/* Pricing */}
                     <div className="col-12 mb-4">
-                      <h6 className="mb-3" style={{ color: "#333333" }}>
-                        <i className="fas fa-tag me-2" style={{ color: "#FF6B6B" }}></i>
-                        E. Bei & Ziada
+                      <h6 className="mb-3" style={{ color: "#000000", fontSize: "1rem", fontWeight: "600" }}>
+                        <i className="fas fa-tag me-2" style={{ color: "#000000" }}></i>
+                        D. Bei & Ziada
                       </h6>
                       <div className="row">
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="price" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="price" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Price (TZS) <span className="text-danger">*</span>
                           </label>
                           <div className="input-group">
                             <span className="input-group-text" style={{
-                              background: "rgba(255, 107, 107, 0.1)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#FF6B6B"
-                            }}>TZS</span>
+                              backgroundColor: "#f8f9fa",
+                              border: "2px solid #d0d0d0",
+                              color: "#666",
+                              borderRadius: "16px 0 0 16px",
+                              borderRight: "none",
+                              padding: "14px 18px",
+                              fontSize: "1rem",
+                              fontWeight: "bold"
+                            }}>
+                              TZS
+                            </span>
                             <input
+                              ref={el => fieldRefs.current['price'] = el}
                               type="number"
-                              className="form-control rounded-3"
+                              className={`form-control ${incompleteFields.includes('price') ? 'incomplete-field' : ''} ${animateField === 'price' ? 'field-animation' : ''}`}
                               id="price"
                               name="price"
                               value={formData.price}
                               onChange={handleInputChange}
                               required
-                              disabled={isLoading}
+                              disabled={isLoading || isSubmitting}
                               min="0"
                               placeholder="e.g., 1500000"
                               style={{
-                                background: "rgba(255, 255, 255, 0.9)",
-                                border: "1px solid rgba(255, 107, 107, 0.3)",
-                                color: "#333333",
-                                padding: "12px 15px"
+                                backgroundColor: "#FFFFFF",
+                                border: "2px solid #d0d0d0",
+                                borderLeft: "none",
+                                color: "#333",
+                                padding: "14px 18px",
+                                borderRadius: "0 16px 16px 0",
+                                fontSize: "1rem"
                               }}
                             />
                           </div>
+                          <small className="text-muted d-block mt-1">
+                            Price in Tanzanian Shillings (TZS)
+                          </small>
+                          {incompleteFields.includes('price') && (
+                            <small className="text-danger mt-1 d-block">
+                              <i className="fas fa-exclamation-circle me-1"></i>
+                              Price is required
+                            </small>
+                          )}
                         </div>
 
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="priceType" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="priceType" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Price Type
                           </label>
                           <select
-                            className="form-select rounded-3"
+                            className="form-select"
                             id="priceType"
                             name="priceType"
                             value={formData.priceType}
                             onChange={handleInputChange}
-                            disabled={isLoading}
+                            disabled={isLoading || isSubmitting}
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: "2px solid #d0d0d0",
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           >
                             {priceTypeOptions.map(type => (
@@ -1578,21 +1881,23 @@ function VendorRegister() {
                         </div>
 
                         <div className="col-md-4 mb-3">
-                          <label htmlFor="warranty" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                          <label htmlFor="warranty" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                             Warranty
                           </label>
                           <select
-                            className="form-select rounded-3"
+                            className="form-select"
                             id="warranty"
                             name="warranty"
                             value={formData.warranty}
                             onChange={handleInputChange}
-                            disabled={isLoading}
+                            disabled={isLoading || isSubmitting}
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: "2px solid #d0d0d0",
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           >
                             {warrantyOptions.map(option => (
@@ -1603,23 +1908,25 @@ function VendorRegister() {
 
                         {formData.warranty === "Yes" && (
                           <div className="col-md-12 mt-3">
-                            <label htmlFor="warrantyPeriod" className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                            <label htmlFor="warrantyPeriod" className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                               Warranty Period
                             </label>
                             <input
                               type="text"
-                              className="form-control rounded-3"
+                              className="form-control"
                               id="warrantyPeriod"
                               name="warrantyPeriod"
                               value={formData.warrantyPeriod}
                               onChange={handleInputChange}
-                              disabled={isLoading}
+                              disabled={isLoading || isSubmitting}
                               placeholder="e.g., 1 Year, 6 Months, Lifetime"
                               style={{
-                                background: "rgba(255, 255, 255, 0.9)",
-                                border: "1px solid rgba(255, 107, 107, 0.3)",
-                                color: "#333333",
-                                padding: "12px 15px"
+                                backgroundColor: "#FFFFFF",
+                                border: "2px solid #d0d0d0",
+                                color: "#333",
+                                padding: "14px 18px",
+                                borderRadius: "16px",
+                                fontSize: "1rem"
                               }}
                             />
                           </div>
@@ -1627,66 +1934,81 @@ function VendorRegister() {
                       </div>
                     </div>
 
-                    {/* Images */}
                     <div className="col-12 mb-4">
-                      <h6 className="mb-3" style={{ color: "#333333" }}>
-                        <i className="fas fa-images me-2" style={{ color: "#FF6B6B" }}></i>
-                        F. Picha
+                      <h6 className="mb-3" style={{ color: "#000000", fontSize: "1rem", fontWeight: "600" }}>
+                        <i className="fas fa-images me-2" style={{ color: "#000000" }}></i>
+                        E. Picha
                       </h6>
                       
-                      {/* Product Images */}
                       <div className="mb-4">
-                        <label className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
-                          Product Images (1-6) <span className="text-danger">*</span>
+                        <label className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
+                          Product Images (1-7) <span className="text-danger">*</span>
                         </label>
                         <div className="mb-3">
                           <input
+                            ref={el => fieldRefs.current['productImages'] = el}
                             type="file"
-                            className="form-control rounded-3"
+                            className={`form-control ${incompleteFields.includes('productImages') ? 'incomplete-field' : ''} ${animateField === 'productImages' ? 'field-animation' : ''}`}
                             accept="image/*"
                             multiple
                             onChange={(e) => handleFileChange(e, 'productImages')}
-                            disabled={isLoading || files.productImages.length >= 6}
+                            disabled={isLoading || isSubmitting || files.productImages.length >= 7}
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: `2px solid ${incompleteFields.includes('productImages') ? '#dc3545' : '#d0d0d0'}`,
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           />
-                          <small className="text-muted">
-                            Upload 1-6 product images (Max 6). Recommended: Show product from different angles.
+                          <small className="text-muted d-block mt-1" style={{ fontSize: "0.85rem" }}>
+                            Upload 1-7 product images (Max 7). Recommended: Show product from different angles.
                           </small>
+                          <small className="text-danger d-block mt-1" style={{ fontSize: "0.85rem" }}>
+                            {files.productImages.length}/7 picha zimepakiwa
+                          </small>
+                          {incompleteFields.includes('productImages') && (
+                            <small className="text-danger mt-1 d-block">
+                              <i className="fas fa-exclamation-circle me-1"></i>
+                              At least one product image is required
+                            </small>
+                          )}
                         </div>
                         
-                        {/* Image Previews */}
                         {filePreviews.productImages.length > 0 && (
                           <div className="row mt-3">
                             {filePreviews.productImages.map((preview, index) => (
-                              <div key={index} className="col-md-4 col-sm-6 mb-3">
+                              <div key={index} className="col-md-3 col-sm-4 col-6 mb-3">
                                 <div className="position-relative">
                                   <img
                                     src={preview}
                                     alt={`Product ${index + 1}`}
-                                    className="img-thumbnail rounded-3"
+                                    className="img-thumbnail"
                                     style={{ 
                                       width: "100%",
-                                      height: "150px",
+                                      height: "120px",
                                       objectFit: "cover",
-                                      border: "2px solid rgba(255, 107, 107, 0.3)"
+                                      border: "2px solid #d0d0d0",
+                                      borderRadius: "12px"
                                     }}
                                   />
                                   <button
                                     type="button"
-                                    className="btn btn-danger btn-sm position-absolute top-0 end-0 m-2"
+                                    className="btn btn-sm position-absolute top-0 end-0 m-1"
                                     onClick={() => removeProductImage(index)}
+                                    disabled={isLoading || isSubmitting}
                                     style={{
-                                      width: "30px",
-                                      height: "30px",
-                                      borderRadius: "50%",
+                                      width: "28px",
+                                      height: "28px",
+                                      borderRadius: "6px",
                                       padding: "0",
-                                      background: "#FF6B6B",
-                                      border: "none"
+                                      backgroundColor: "rgba(255, 255, 255, 0.9)",
+                                      border: "2px solid #dc3545",
+                                      color: "#dc3545",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center"
                                     }}
                                   >
                                     <i className="fas fa-times"></i>
@@ -1698,46 +2020,70 @@ function VendorRegister() {
                         )}
                       </div>
 
-                      {/* Shop Image */}
                       <div>
-                        <label className="form-label" style={{ color: "#555555", fontWeight: "600" }}>
+                        <label className="form-label" style={{ color: "#333", fontWeight: "600", fontSize: "0.95rem" }}>
                           Shop Image (Optional)
                         </label>
                         <div className="mb-3">
                           <input
                             type="file"
-                            className="form-control rounded-3"
+                            className="form-control"
                             accept="image/*"
                             onChange={(e) => handleFileChange(e, 'shopImage')}
-                            disabled={isLoading}
+                            disabled={isLoading || isSubmitting}
                             style={{
-                              background: "rgba(255, 255, 255, 0.9)",
-                              border: "1px solid rgba(255, 107, 107, 0.3)",
-                              color: "#333333",
-                              padding: "12px 15px"
+                              backgroundColor: "#FFFFFF",
+                              border: "2px solid #d0d0d0",
+                              color: "#333",
+                              padding: "14px 18px",
+                              borderRadius: "16px",
+                              fontSize: "1rem"
                             }}
                           />
-                          <small className="text-muted">
+                          <small className="text-muted d-block mt-1" style={{ fontSize: "0.85rem" }}>
                             Upload a picture of your shop (Optional but recommended)
                           </small>
                         </div>
                         
-                        {/* Shop Image Preview */}
                         {filePreviews.shopImage && (
                           <div className="row mt-3">
-                            <div className="col-md-6">
+                            <div className="col-md-4 col-sm-6">
                               <div className="position-relative">
                                 <img
                                   src={filePreviews.shopImage}
                                   alt="Shop"
-                                  className="img-thumbnail rounded-3"
+                                  className="img-thumbnail"
                                   style={{ 
                                     width: "100%",
-                                    height: "200px",
+                                    height: "150px",
                                     objectFit: "cover",
-                                    border: "2px solid rgba(255, 107, 107, 0.3)"
+                                    border: "2px solid #d0d0d0",
+                                    borderRadius: "16px"
                                   }}
                                 />
+                                <button
+                                  type="button"
+                                  className="btn btn-sm position-absolute top-0 end-0 m-2"
+                                  onClick={() => {
+                                    setFiles(prev => ({ ...prev, shopImage: null }));
+                                    setFilePreviews(prev => ({ ...prev, shopImage: null }));
+                                  }}
+                                  disabled={isLoading || isSubmitting}
+                                  style={{
+                                    width: "32px",
+                                    height: "32px",
+                                    borderRadius: "8px",
+                                    padding: "0",
+                                    backgroundColor: "rgba(255, 255, 255, 0.9)",
+                                    border: "2px solid #dc3545",
+                                    color: "#dc3545",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center"
+                                  }}
+                                >
+                                  <i className="fas fa-times"></i>
+                                </button>
                               </div>
                             </div>
                           </div>
@@ -1748,67 +2094,70 @@ function VendorRegister() {
                 </div>
               )}
 
-              {/* Step 4: Confirmation */}
-              {currentStep === 4 && (
-                <div style={{ animation: "fadeIn 0.5s ease" }}>
-                  <h5 className="mb-4" style={{ color: "#333333" }}>
-                    <i className="fas fa-check-circle me-2" style={{ color: "#FF6B6B" }}></i>
-                    G. Thibitisho
+              {/* Step 3: Confirmation */}
+              {currentStep === 3 && (
+                <div>
+                  <h5 className="mb-4" style={{ color: "#000000", fontSize: "1.1rem", fontWeight: "600" }}>
+                    <i className="fas fa-check-circle me-2" style={{ color: "#000000" }}></i>
+                    F. Thibitisho
                   </h5>
                   
                   <div className="mb-4">
                     <div className="card" style={{
-                      background: "rgba(255, 107, 107, 0.05)",
-                      border: "2px dashed rgba(255, 107, 107, 0.3)",
-                      borderRadius: "15px"
+                      backgroundColor: "#f8f9fa",
+                      border: "2px solid #d0d0d0",
+                      borderRadius: "16px"
                     }}>
                       <div className="card-body">
-                        <h6 className="mb-3" style={{ color: "#333333" }}>
-                          <i className="fas fa-info-circle me-2" style={{ color: "#FF6B6B" }}></i>
+                        <h6 className="mb-3" style={{ color: "#000000", fontWeight: "600" }}>
+                          <i className="fas fa-info-circle me-2" style={{ color: "#000000" }}></i>
                           Summary of Your Registration
                         </h6>
                         
                         <div className="row">
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Shop:</strong> {formData.shopName}
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Shop:</strong> {formData.shopName}
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Seller:</strong> {formData.sellerName}
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Country:</strong> Tanzania
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Phone:</strong> {formData.phoneNumber}
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>WhatsApp:</strong> 
+                            <span style={{ color: "#25D366" }}>
+                              <i className="fab fa-whatsapp ms-1 me-1"></i>
+                              {formData.whatsappNumber}
+                            </span>
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Category:</strong> {formData.mainCategory}
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Location:</strong> {formData.area}, {formData.district}
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Location:</strong> {formData.area}, {formData.district}
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Category:</strong> {formData.mainCategory}
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Product:</strong> {formData.productName}
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Product:</strong> {formData.productName}
+                          </div>
+                          <div className="col-12 mb-2">
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Description:</strong>
+                            <p className="text-muted mt-1 mb-0" style={{ fontSize: "0.9rem", fontStyle: "italic" }}>
+                              {formData.description?.substring(0, 150)}...
+                            </p>
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Price:</strong> {formData.price ? new Intl.NumberFormat('en-TZ').format(formData.price) : "0"} TZS
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Price:</strong> 
+                            {formData.price ? (
+                              ` ${new Intl.NumberFormat('en-TZ').format(formData.price)} TZS`
+                            ) : " 0"}
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Stock:</strong> {formData.stockStatus}
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Stock:</strong> {formData.stockStatus}
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Condition:</strong> {formData.condition}
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Condition:</strong> {formData.condition}
                           </div>
                           <div className="col-md-6 mb-2">
-                            <strong style={{ color: "#555555" }}>Images:</strong> {files.productImages.length} uploaded
+                            <strong style={{ color: "#333", fontSize: "0.9rem" }}>Images:</strong> {files.productImages.length} uploaded
                           </div>
-                          {formData.size && (
-                            <div className="col-md-6 mb-2">
-                              <strong style={{ color: "#555555" }}>Size:</strong> {formData.size}
-                            </div>
-                          )}
-                          {formData.color && (
-                            <div className="col-md-6 mb-2">
-                              <strong style={{ color: "#555555" }}>Color:</strong> {formData.color}
-                            </div>
-                          )}
                         </div>
                       </div>
                     </div>
@@ -1817,161 +2166,208 @@ function VendorRegister() {
                   <div className="mb-4">
                     <div className="form-check mb-3">
                       <input
-                        className="form-check-input"
+                        ref={el => fieldRefs.current['confirmAvailability'] = el}
+                        className={`form-check-input ${incompleteFields.includes('confirmAvailability') ? 'incomplete-field' : ''} ${animateField === 'confirmAvailability' ? 'field-animation' : ''}`}
                         type="checkbox"
                         id="confirmAvailability"
                         name="confirmAvailability"
                         checked={formData.confirmAvailability}
                         onChange={handleInputChange}
                         required
+                        disabled={isLoading || isSubmitting}
                         style={{
-                          background: formData.confirmAvailability ? "#FF6B6B" : "rgba(255, 255, 255, 0.9)",
-                          borderColor: formData.confirmAvailability ? "#FF6B6B" : "rgba(255, 107, 107, 0.3)",
                           cursor: "pointer",
                           width: "20px",
-                          height: "20px"
+                          height: "20px",
+                          border: `2px solid ${incompleteFields.includes('confirmAvailability') ? '#dc3545' : '#d0d0d0'}`,
+                          borderRadius: "6px"
                         }}
                       />
                       <label className="form-check-label" htmlFor="confirmAvailability" style={{ 
-                        color: "#555555",
-                        fontWeight: "600"
+                        color: incompleteFields.includes('confirmAvailability') ? '#dc3545' : '#333',
+                        fontWeight: "600",
+                        fontSize: "0.95rem"
                       }}>
                         I confirm that the product information provided is accurate and the product is available as stated
                       </label>
+                      {incompleteFields.includes('confirmAvailability') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          You must confirm product availability
+                        </small>
+                      )}
                     </div>
 
                     <div className="form-check mb-3">
                       <input
-                        className="form-check-input"
+                        ref={el => fieldRefs.current['agreeToUpdate'] = el}
+                        className={`form-check-input ${incompleteFields.includes('agreeToUpdate') ? 'incomplete-field' : ''} ${animateField === 'agreeToUpdate' ? 'field-animation' : ''}`}
                         type="checkbox"
                         id="agreeToUpdate"
                         name="agreeToUpdate"
                         checked={formData.agreeToUpdate}
                         onChange={handleInputChange}
                         required
+                        disabled={isLoading || isSubmitting}
                         style={{
-                          background: formData.agreeToUpdate ? "#FF6B6B" : "rgba(255, 255, 255, 0.9)",
-                          borderColor: formData.agreeToUpdate ? "#FF6B6B" : "rgba(255, 107, 107, 0.3)",
                           cursor: "pointer",
                           width: "20px",
-                          height: "20px"
+                          height: "20px",
+                          border: `2px solid ${incompleteFields.includes('agreeToUpdate') ? '#dc3545' : '#d0d0d0'}`,
+                          borderRadius: "6px"
                         }}
                       />
                       <label className="form-check-label" htmlFor="agreeToUpdate" style={{ 
-                        color: "#555555",
-                        fontWeight: "600"
+                        color: incompleteFields.includes('agreeToUpdate') ? '#dc3545' : '#333',
+                        fontWeight: "600",
+                        fontSize: "0.95rem"
                       }}>
                         I agree to update stock information regularly and notify customers of any changes
                       </label>
+                      {incompleteFields.includes('agreeToUpdate') && (
+                        <small className="text-danger mt-1 d-block">
+                          <i className="fas fa-exclamation-circle me-1"></i>
+                          You must agree to update stock information
+                        </small>
+                      )}
                     </div>
                   </div>
 
                   <div className="alert alert-info" style={{
-                    background: "rgba(78, 205, 196, 0.1)",
-                    border: "1px solid rgba(78, 205, 196, 0.3)",
-                    color: "#4ECDC4",
-                    borderRadius: "10px"
+                    backgroundColor: "rgba(0, 0, 0, 0.05)",
+                    border: "2px solid rgba(0, 0, 0, 0.3)",
+                    color: "#333",
+                    borderRadius: "16px",
+                    padding: "14px 18px",
+                    fontSize: "0.95rem"
                   }}>
-                    <i className="fas fa-lightbulb me-2"></i>
-                    <strong>Tip:</strong> After registration, you can add more products from your seller dashboard. Different products can have different categories.
+                    <i className="fas fa-lightbulb me-2" style={{ color: "#000000" }}></i>
+                    <strong>Important:</strong> After registration, you will be automatically redirected to your seller profile.
                   </div>
+                </div>
+              )}
+
+              {/* Incomplete Fields Summary */}
+              {incompleteFields.length > 0 && (
+                <div className="alert alert-warning mt-3" style={{
+                  borderRadius: "16px",
+                  border: "2px solid #ffc107",
+                  backgroundColor: "#fff3cd"
+                }}>
+                  <i className="fas fa-exclamation-triangle me-2 text-warning"></i>
+                  <strong>Please fill in all required fields:</strong>
+                  <ul className="mt-2 mb-0">
+                    {incompleteFields.map(field => {
+                      const fieldNames = {
+                        shopName: 'Shop Name',
+                        country: 'Country',
+                        whatsappNumber: 'WhatsApp Number',
+                        region: 'Region',
+                        district: 'District',
+                        area: 'Area',
+                        mainCategory: 'Main Category',
+                        productName: 'Product Name',
+                        description: 'Description',
+                        price: 'Price',
+                        productImages: 'Product Images',
+                        confirmAvailability: 'Confirmation',
+                        agreeToUpdate: 'Agreement'
+                      };
+                      return (
+                        <li key={field} style={{ color: '#856404' }}>
+                          {fieldNames[field] || field}
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
               )}
 
               {/* Navigation Buttons */}
               <div className="d-flex justify-content-between align-items-center mt-4 pt-3 border-top" style={{
-                borderColor: "rgba(255, 107, 107, 0.2)"
+                borderColor: "#d0d0d0"
               }}>
-                <div>
-                  {currentStep > 1 ? (
+                {currentStep > 1 && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={prevStep}
+                    disabled={isLoading || isSubmitting}
+                    style={{
+                      backgroundColor: "#FFFFFF",
+                      border: "2px solid #d0d0d0",
+                      color: "#000000",
+                      padding: "12px 28px",
+                      borderRadius: "18px",
+                      fontWeight: "600",
+                      fontSize: "1rem"
+                    }}
+                  >
+                    <i className="fas fa-arrow-left me-2"></i>
+                    Back
+                  </button>
+                )}
+                
+                <div className="ms-auto">
+                  {currentStep < 3 ? (
                     <button
                       type="button"
-                      className="btn btn-outline-secondary rounded-3 px-4 py-2"
-                      onClick={prevStep}
-                      disabled={isLoading}
-                      style={{
-                        border: "2px solid rgba(255, 107, 107, 0.3)",
-                        background: isHovering.back ? "rgba(255, 107, 107, 0.1)" : "transparent",
-                        color: "#FF6B6B",
-                        transition: "all 0.3s ease",
-                        transform: isHovering.back ? "translateX(-5px)" : "translateX(0)",
-                        fontWeight: "600"
-                      }}
-                      onMouseEnter={() => handleMouseEnter("back")}
-                      onMouseLeave={() => handleMouseLeave("back")}
-                    >
-                      <i className="fas fa-arrow-left me-2"></i>
-                      Back
-                    </button>
-                  ) : (
-                    <Link to="/vendor-login" className="btn btn-outline-secondary rounded-3 px-4 py-2 text-decoration-none" style={{
-                      border: "2px solid rgba(255, 107, 107, 0.3)",
-                      color: "#FF6B6B",
-                      fontWeight: "600"
-                    }}>
-                      <i className="fas fa-sign-in-alt me-2"></i>
-                      Back to Login
-                    </Link>
-                  )}
-                </div>
-
-                <div className="d-flex gap-3">
-                  {currentStep < 4 ? (
-                    <button
-                      type="button"
-                      className="btn rounded-3 px-4 py-2 fw-bold"
+                      className="btn"
                       onClick={nextStep}
-                      disabled={!validateStep(currentStep)}
+                      disabled={isLoading || isSubmitting}
                       style={{
                         background: validateStep(currentStep) 
-                          ? "linear-gradient(135deg, #FF6B6B, #FF8E53)" 
-                          : "rgba(255, 107, 107, 0.3)",
-                        border: "none",
-                        color: "white",
+                          ? "#000000"
+                          : incompleteFields.length > 0 ? "#dc3545" : "#f8f9fa",
+                        border: "2px solid #000000",
+                        color: validateStep(currentStep) ? "#FFFFFF" : incompleteFields.length > 0 ? "#FFFFFF" : "#666",
+                        padding: "12px 28px",
+                        borderRadius: "18px",
+                        fontWeight: "600",
+                        fontSize: "1rem",
+                        opacity: (isLoading || isSubmitting) ? 0.6 : (validateStep(currentStep) ? 1 : 0.5),
                         transition: "all 0.3s ease",
-                        transform: isHovering.next ? "scale(1.05)" : "scale(1)",
-                        opacity: validateStep(currentStep) ? 1 : 0.5,
-                        fontWeight: "600"
+                        cursor: (isLoading || isSubmitting) ? "not-allowed" : "pointer"
                       }}
-                      onMouseEnter={() => handleMouseEnter("next")}
-                      onMouseLeave={() => handleMouseLeave("next")}
                     >
-                      Continue
-                      <i className="fas fa-arrow-right ms-2"></i>
+                      {incompleteFields.length > 0 && !validateStep(currentStep) ? (
+                        <>
+                          <i className="fas fa-exclamation-circle me-2"></i>
+                          Complete Required Fields
+                        </>
+                      ) : (
+                        <>
+                          Continue
+                          <i className="fas fa-arrow-right ms-2"></i>
+                        </>
+                      )}
                     </button>
                   ) : (
                     <button
                       type="submit"
-                      className="btn btn-success rounded-3 px-4 py-2 fw-bold"
-                      disabled={isLoading || !validateStep(4)}
+                      className="btn"
+                      disabled={isLoading || isSubmitting}
                       style={{
-                        background: isLoading 
-                          ? "linear-gradient(135deg, #666, #888)" 
-                          : isHovering.submit
-                            ? "linear-gradient(135deg, #FF8E53, #FF6B6B)"
-                            : "linear-gradient(135deg, #FF6B6B, #FF8E53)",
-                        border: "none",
-                        color: "white",
-                        transition: "all 0.3s ease",
-                        transform: isHovering.submit ? "scale(1.05)" : "scale(1)",
-                        opacity: validateStep(4) ? 1 : 0.5,
-                        boxShadow: isHovering.submit 
-                          ? "0 10px 20px rgba(255, 107, 107, 0.4)" 
-                          : "none",
-                        fontWeight: "600"
+                        background: "#000000",
+                        border: "2px solid #000000",
+                        color: "#FFFFFF",
+                        padding: "12px 28px",
+                        borderRadius: "18px",
+                        fontWeight: "600",
+                        fontSize: "1rem",
+                        opacity: isSubmitting ? 0.6 : 1,
+                        cursor: isSubmitting ? "not-allowed" : "pointer"
                       }}
-                      onMouseEnter={() => handleMouseEnter("submit")}
-                      onMouseLeave={() => handleMouseLeave("submit")}
                     >
-                      {isLoading ? (
+                      {isSubmitting ? (
                         <>
                           <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-                          Registering...
+                          {location.state?.action === "edit-product" ? "Updating..." : "Registering..."}
                         </>
                       ) : (
                         <>
                           <i className="fas fa-check-circle me-2"></i>
-                          Complete Registration
+                          {location.state?.action === "edit-product" ? "Update Product" : "Complete Registration"}
                         </>
                       )}
                     </button>
@@ -1979,103 +2375,291 @@ function VendorRegister() {
                 </div>
               </div>
 
-              {/* Step Indicator */}
               <div className="text-center mt-3">
-                <small className="text-muted">
-                  Step {currentStep} of 4 • {Math.round(progress)}% Completed
+                <small className="text-muted" style={{ fontSize: "0.85rem" }}>
+                  Step {currentStep} of 3 • {Math.round(progress)}% Completed
                 </small>
               </div>
             </form>
           </div>
 
-          {/* Additional Info */}
           <div className="card-footer text-center" style={{
-            background: "rgba(255, 255, 255, 0.8)",
-            borderTop: "1px solid rgba(255, 107, 107, 0.1)"
+            backgroundColor: "#f8f9fa",
+            borderTop: "2px solid #d0d0d0",
+            padding: "16px 20px"
           }}>
-            <small style={{ color: "#666666" }}>
-              <i className="fas fa-info-circle me-1" style={{ color: "#FF6B6B" }}></i>
+            <small style={{ color: "#666", fontSize: "0.85rem" }}>
+              <i className="fas fa-info-circle me-1" style={{ color: "#000000" }}></i>
               Your products will be visible to customers immediately • 
-              <i className="fas fa-shield-alt ms-2 me-1" style={{ color: "#4ECDC4" }}></i>
+              <i className="fas fa-shield-alt ms-2 me-1" style={{ color: "#000000" }}></i>
               Verified sellers get priority in search results
             </small>
           </div>
         </div>
 
-        {/* Footer Links */}
         <div className="text-center mt-4">
-          <div className="d-flex justify-content-center gap-4 mb-3">
-            <Link to="/" className="text-decoration-none" style={{ color: "#FF6B6B", fontWeight: "600" }}>
-              <i className="fas fa-home me-1"></i> Home
+          <div className="d-flex justify-content-center gap-3 mb-3" style={{ flexWrap: "wrap" }}>
+            <Link to="/" className="text-decoration-none" style={{ 
+              color: "#666666",
+              fontSize: "0.9rem",
+              fontWeight: "500"
+            }}>
+              Home
             </Link>
-            <a href="#" className="text-decoration-none" style={{ color: "#FF6B6B", fontWeight: "600" }}>
-              <i className="fas fa-question-circle me-1"></i> Help Center
+            <span className="text-muted">•</span>
+            <a href="#" className="text-decoration-none" style={{ 
+              color: "#666666",
+              fontSize: "0.9rem",
+              fontWeight: "500"
+            }}>
+              Help
             </a>
-            <a href="#" className="text-decoration-none" style={{ color: "#FF6B6B", fontWeight: "600" }}>
-              <i className="fas fa-envelope me-1"></i> support@availo.co.tz
-            </a>
-            <a href="#" className="text-decoration-none" style={{ color: "#FF6B6B", fontWeight: "600" }}>
-              <i className="fas fa-phone me-1"></i> +255 754 AVAILO
+            <span className="text-muted">•</span>
+            <a href="mailto:support@availo.co.tz" className="text-decoration-none" style={{ 
+              color: "#666666",
+              fontSize: "0.9rem",
+              fontWeight: "500"
+            }}>
+              Support
             </a>
           </div>
-          <p style={{ color: "#666666", marginBottom: "0" }}>
-            Already have an account? <Link to="/vendor-login" style={{ 
-              color: "#FF6B6B", 
-              fontWeight: "bold",
-              textDecoration: "none",
-              borderBottom: "2px solid transparent",
-              transition: "border-bottom 0.3s ease"
-            }}
-            onMouseEnter={(e) => {
-              e.target.style.borderBottom = "2px solid #FF6B6B";
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.borderBottom = "2px solid transparent";
+          
+          <p className="mb-0" style={{ 
+            color: "#666666",
+            fontSize: "0.9rem",
+            lineHeight: "1.4"
+          }}>
+            Already have an account?{" "}
+            <Link to="/vendor-login" style={{ 
+              color: "#000000",
+              fontWeight: "600",
+              textDecoration: "none"
             }}>
               Login here
             </Link>
+            {" "}• Need help? Call <strong style={{ color: "#000000" }}>255 657 330 116</strong> or email{" "}
+            <a href="mailto:support@availo.co.tz" style={{ 
+              color: "#000000",
+              fontWeight: "600",
+              textDecoration: "none"
+            }}>
+              support@availo.co.tz
+            </a>
           </p>
         </div>
       </div>
 
-      {/* Inline Styles for Animations */}
       <style>
         {`
-          @keyframes gradient {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-          }
-          
-          @keyframes spin {
-            0% { transform: translate(-50%, -50%) rotate(0deg); }
-            100% { transform: translate(-50%, -50%) rotate(360deg); }
-          }
-          
-          @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-          }
-          
           .form-control:focus, .form-select:focus {
-            background: rgba(255, 255, 255, 0.95) !important;
-            border-color: #FF6B6B !important;
-            box-shadow: 0 0 0 0.25rem rgba(255, 107, 107, 0.25) !important;
-            color: #333333 !important;
+            border-color: #000000 !important;
+            box-shadow: 0 0 0 0.25rem rgba(0, 0, 0, 0.15) !important;
+            outline: none !important;
+            background-color: #FFFFFF !important;
           }
           
-          .form-control::placeholder {
-            color: rgba(102, 102, 102, 0.6) !important;
-          }
-          
-          .btn:hover {
+          button:hover:not(:disabled) {
+            background-color: #333333 !important;
+            color: #FFFFFF !important;
             transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease !important;
+            border-color: #333333 !important;
+          }
+          
+          button[style*="border: 2px solid #d0d0d0"]:hover:not(:disabled) {
+            background-color: #000000 !important;
+            color: #FFFFFF !important;
+            border-color: #000000 !important;
+          }
+          
+          a.text-decoration-none:hover {
+            color: #000000 !important;
+            transition: color 0.2s ease !important;
+          }
+          
+          input[type="file"] {
+            border-radius: 16px !important;
+            border: 2px solid #d0d0d0 !important;
+            padding: 14px 18px !important;
+          }
+          
+          input[type="file"]:focus {
+            border-color: #000000 !important;
+            box-shadow: 0 0 0 0.25rem rgba(0, 0, 0, 0.15) !important;
+          }
+          
+          textarea.form-control {
+            border-radius: 16px !important;
+            border: 2px solid #d0d0d0 !important;
+          }
+          
+          textarea.form-control:focus {
+            border-color: #000000 !important;
+            box-shadow: 0 0 0 0.25rem rgba(0, 0, 0, 0.15) !important;
+          }
+          
+          .img-thumbnail {
+            border: 2px solid #d0d0d0 !important;
+            border-radius: 16px !important;
+          }
+          
+          .form-check-input {
+            border: 2px solid #d0d0d0 !important;
+            border-radius: 6px !important;
+            width: 20px !important;
+            height: 20px !important;
+          }
+          
+          .form-check-input:checked {
+            background-color: #000000 !important;
+            border-color: #000000 !important;
+          }
+          
+          .form-check-input:focus {
+            border-color: #000000 !important;
+            box-shadow: 0 0 0 0.2rem rgba(0, 0, 0, 0.25) !important;
+          }
+          
+          .badge {
+            border-radius: 8px !important;
+            border: 2px solid #d0d0d0 !important;
+          }
+          
+          .alert {
+            border-radius: 16px !important;
+            border: 2px solid !important;
+          }
+          
+          .card {
+            transition: transform 0.3s ease, border-color 0.3s ease;
+          }
+          
+          .card:hover {
+            transform: translateY(-3px);
+            border-color: #a0a0a0 !important;
+          }
+          
+          /* 🔥 RED ANIMATION FOR INCOMPLETE FIELDS */
+          .incomplete-field {
+            border-color: #dc3545 !important;
+            background-color: rgba(220, 53, 69, 0.05) !important;
+          }
+          
+          .field-animation {
+            animation: shake 0.5s ease-in-out, glow 1.5s ease-in-out;
+          }
+          
+          @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+            20%, 40%, 60%, 80% { transform: translateX(5px); }
+          }
+          
+          @keyframes glow {
+            0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
+            50% { box-shadow: 0 0 20px 5px rgba(220, 53, 69, 0.5); }
+            100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+          }
+          
+          .form-check-input.field-animation {
+            animation: pulse 1s ease-in-out;
+          }
+          
+          @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+          }
+          
+          @media (max-width: 576px) {
+            .container {
+              padding: 0 15px;
+            }
+            
+            .card-body {
+              padding: 20px !important;
+            }
+            
+            .form-control, .form-select, textarea.form-control {
+              padding: 12px 16px !important;
+              font-size: 0.95rem !important;
+              border-radius: 14px !important;
+            }
+            
+            input[type="file"] {
+              padding: 12px 16px !important;
+              border-radius: 14px !important;
+            }
+            
+            button {
+              padding: 10px 20px !important;
+              font-size: 0.95rem !important;
+              border-radius: 16px !important;
+            }
+            
+            .input-group-text {
+              padding: 12px 16px !important;
+              border-radius: 14px 0 0 14px !important;
+            }
+            
+            .input-group .form-control {
+              border-radius: 0 14px 14px 0 !important;
+            }
+            
+            h1 {
+              font-size: 1.6rem !important;
+            }
+            
+            .card-header h3 {
+              font-size: 1.1rem !important;
+            }
+            
+            .img-thumbnail {
+              height: 100px !important;
+            }
+          }
+          
+          @media (max-width: 768px) {
+            .row {
+              margin-left: -8px;
+              margin-right: -8px;
+            }
+            
+            .col-md-6, .col-md-4, .col-12 {
+              padding-left: 8px;
+              padding-right: 8px;
+            }
+            
+            .card-header {
+              padding: 12px 16px !important;
+            }
+          }
+          
+          html, body {
+            scroll-behavior: auto;
+          }
+          
+          #vendor-register-top {
+            scroll-margin-top: 0;
+          }
+          
+          .card, .btn, .form-control, .alert, .badge {
             transition: all 0.3s ease;
+          }
+          
+          .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+          }
+          
+          .rounded-circle {
+            border-radius: 12px !important;
+            object-fit: cover;
           }
         `}
       </style>
       
-      {/* Font Awesome Icons */}
       <link 
         rel="stylesheet" 
         href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" 

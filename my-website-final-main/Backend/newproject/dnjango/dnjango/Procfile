@@ -1,1 +1,0 @@
-web: cd /app/Backend/newproject/dnjango && python manage.py runserver 0.0.0.0:$PORT

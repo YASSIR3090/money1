@@ -1,7 +1,5 @@
 import React, { useState } from "react";
 import { useNavigate } from 'react-router-dom';
-import bgImage from "../Imgs/zawaBg.jpg";
-import zawaLogo from "../Imgs/zawaLogo.png";
 
 function AdminRegister() {
   const [formData, setFormData] = useState({

@@ -1,6 +1,4 @@
 import React, { useState, useEffect } from "react";
-import bgImage from "../Imgs/zawaBg.jpg";
-import zawaLogo from "../Imgs/zawaLogo.png";
 import { Link, useNavigate } from 'react-router-dom';
 
 function Reset() {
